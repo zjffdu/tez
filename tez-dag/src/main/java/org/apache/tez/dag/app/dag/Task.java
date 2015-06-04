@@ -26,7 +26,7 @@ import org.apache.tez.common.counters.TezCounters;
 import org.apache.tez.dag.api.TaskLocationHint;
 import org.apache.tez.dag.api.oldrecords.TaskReport;
 import org.apache.tez.dag.api.oldrecords.TaskState;
-import org.apache.tez.dag.history.HistoryEvent;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskData;
 import org.apache.tez.dag.records.TezTaskAttemptID;
 import org.apache.tez.dag.records.TezTaskID;
 import org.apache.tez.runtime.api.impl.TaskSpec;
@@ -65,7 +65,7 @@ public interface Task {
   
   public List<String> getDiagnostics();
 
-  TaskState restoreFromEvent(HistoryEvent historyEvent);
+  TaskState restoreFromEvent(RecoveredTaskData recoveredTaskData);
 
   public void registerTezEvent(TezEvent tezEvent);
   

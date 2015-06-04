@@ -1217,4 +1217,12 @@ public class TezConfiguration extends Configuration {
       TEZ_PREFIX + "client.diagnostics.wait.timeout-ms";
   @Private
   public static final long TEZ_CLIENT_DIAGNOSTICS_WAIT_TIMEOUT_MS_DEFAULT = 3*1000;
+
+  // for Recovery Test
+  @Private
+  @ConfigurationScope(Scope.TEST)
+  public static final String TEZ_AM_RECOVERY_SERVICE_CLASS =
+      TEZ_PREFIX + "test.recovery_service_class";
+  @Private
+  public static final String TEZ_AM_RECOVERY_SERVICE_CLASS_DEAULT = "org.apache.tez.dag.history.recovery.RecoveryService";
 }

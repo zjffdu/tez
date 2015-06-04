@@ -15,23 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.tez.dag.app.dag.event;
 
-import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskData;
-import org.apache.tez.dag.records.TezTaskID;
+import org.apache.tez.dag.history.events.VertexStartedEvent;
+import org.apache.tez.dag.records.TezVertexID;
 
-public class TaskEventRecoverTask extends TaskEvent {
+public class VertexEventStartVertex extends VertexEvent {
 
-  private RecoveredTaskData recoverdTaskData;
+  private VertexStartedEvent recoveredVertexStartedEvent;
 
-  public TaskEventRecoverTask(TezTaskID taskID, RecoveredTaskData recoveredTaskData) {
-    super(taskID, TaskEventType.T_RECOVER);
-    this.recoverdTaskData = recoveredTaskData;
+  public VertexEventStartVertex(TezVertexID vertexId) {
+    this(vertexId, null);
   }
 
-  public RecoveredTaskData getRecoverdTaskData() {
-    return recoverdTaskData;
+  public VertexEventStartVertex(TezVertexID vertexId, VertexStartedEvent recoveredVertexStartedEvent) {
+    super(vertexId, VertexEventType.V_START);
+    this.recoveredVertexStartedEvent = recoveredVertexStartedEvent;
   }
 
+  public VertexStartedEvent getRecoveredVertexStartedEvent() {
+    return recoveredVertexStartedEvent;
+  }
 }

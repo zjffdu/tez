@@ -174,6 +174,7 @@ public class TestAMRecovery {
     tezConf.setBoolean(
         RecoveryService.TEZ_TEST_RECOVERY_DRAIN_EVENTS_WHEN_STOPPED,
         true);
+//    tezConf.set(TezConfiguration.TEZ_AM_LAUNCH_CMD_OPTS, "-Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN -Xdebug -Xrunjdwp:transport=dt_socket,address=9009,server=y,suspend=y");
     tezSession = TezClient.create("TestDAGRecovery", tezConf);
     tezSession.start();
   }
@@ -198,7 +199,7 @@ public class TestAMRecovery {
    *
    * @throws Exception
    */
-  @Test(timeout = 120000)
+  @Test//(timeout = 120000)
   public void testVertexPartiallyFinished_Broadcast() throws Exception {
     DAG dag =
         createDAG("VertexPartiallyFinished_Broadcast", ControlledImmediateStartVertexManager.class,

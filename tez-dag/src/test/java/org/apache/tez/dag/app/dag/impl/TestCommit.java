@@ -82,6 +82,7 @@ import org.apache.tez.dag.app.dag.event.CallableEventType;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventDAGFinished;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventType;
 import org.apache.tez.dag.app.dag.event.DAGEvent;
+import org.apache.tez.dag.app.dag.event.DAGEventInitDag;
 import org.apache.tez.dag.app.dag.event.DAGEventStartDag;
 import org.apache.tez.dag.app.dag.event.DAGEventType;
 import org.apache.tez.dag.app.dag.event.DAGEventVertexReRunning;
@@ -540,7 +541,7 @@ public class TestCommit {
   }
 
   private void initDAG(DAGImpl dag) {
-    dag.handle(new DAGEvent(dag.getID(), DAGEventType.DAG_INIT));
+    dag.handle(new DAGEventInitDag(dag.getID()));
     Assert.assertEquals(DAGState.INITED, dag.getState());
   }
 

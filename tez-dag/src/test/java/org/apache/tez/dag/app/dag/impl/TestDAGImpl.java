@@ -104,6 +104,7 @@ import org.apache.tez.dag.app.dag.event.CallableEventType;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventDAGFinished;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventType;
 import org.apache.tez.dag.app.dag.event.DAGEvent;
+import org.apache.tez.dag.app.dag.event.DAGEventInitDag;
 import org.apache.tez.dag.app.dag.event.DAGEventStartDag;
 import org.apache.tez.dag.app.dag.event.DAGEventType;
 import org.apache.tez.dag.app.dag.event.DAGEventVertexCompleted;
@@ -897,7 +898,7 @@ public class TestDAGImpl {
 
   private void initDAG(DAGImpl impl) {
     impl.handle(
-        new DAGEvent(impl.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(impl.getID()));
     Assert.assertEquals(DAGState.INITED, impl.getState());
   }
 
@@ -919,7 +920,7 @@ public class TestDAGImpl {
   public void testDAGInitFailed() {
     setupDAGWithCustomEdge(ExceptionLocation.Initialize);
     dagWithCustomEdge.handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     Assert.assertEquals(DAGState.FAILED, dagWithCustomEdge.getState());
     // START event is followed after INIT event
     dagWithCustomEdge.handle(new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_START));
@@ -993,7 +994,7 @@ public class TestDAGImpl {
   public void testEdgeManager_GetNumDestinationTaskPhysicalInputs() {
     setupDAGWithCustomEdge(ExceptionLocation.GetNumDestinationTaskPhysicalInputs);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(),
         null));
     dispatcher.await();
@@ -1008,7 +1009,7 @@ public class TestDAGImpl {
   public void testEdgeManager_GetNumSourceTaskPhysicalOutputs() {
     setupDAGWithCustomEdge(ExceptionLocation.GetNumSourceTaskPhysicalOutputs);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(),
         null));
     dispatcher.await();
@@ -1026,7 +1027,7 @@ public class TestDAGImpl {
   public void testEdgeManager_RouteDataMovementEventToDestination() {
     setupDAGWithCustomEdge(ExceptionLocation.RouteDataMovementEventToDestination);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(), 
         null));
     dispatcher.await();
@@ -1058,7 +1059,7 @@ public class TestDAGImpl {
     // Remove after legacy routing is removed
     setupDAGWithCustomEdge(ExceptionLocation.RouteDataMovementEventToDestination, true);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(), 
         null));
     dispatcher.await();
@@ -1089,7 +1090,7 @@ public class TestDAGImpl {
     // Remove after legacy routing is removed
     setupDAGWithCustomEdge(ExceptionLocation.RouteInputSourceTaskFailedEventToDestination, true);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(), 
         null));
     dispatcher.await();
@@ -1120,7 +1121,7 @@ public class TestDAGImpl {
   public void testEdgeManager_GetNumDestinationConsumerTasks() {
     setupDAGWithCustomEdge(ExceptionLocation.GetNumDestinationConsumerTasks);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(), 
         null));
     dispatcher.await();
@@ -1150,7 +1151,7 @@ public class TestDAGImpl {
   public void testEdgeManager_RouteInputErrorEventToSource() {
     setupDAGWithCustomEdge(ExceptionLocation.RouteInputErrorEventToSource);
     dispatcher.getEventHandler().handle(
-        new DAGEvent(dagWithCustomEdge.getID(), DAGEventType.DAG_INIT));
+        new DAGEventInitDag(dagWithCustomEdge.getID()));
     dispatcher.getEventHandler().handle(new DAGEventStartDag(dagWithCustomEdge.getID(), 
         null));
     dispatcher.await();

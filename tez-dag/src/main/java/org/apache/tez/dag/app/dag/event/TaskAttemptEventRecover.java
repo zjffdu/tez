@@ -15,23 +15,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.tez.dag.app.dag.event;
 
-import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskData;
-import org.apache.tez.dag.records.TezTaskID;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskAttemptData;
+import org.apache.tez.dag.records.TezTaskAttemptID;
 
-public class TaskEventRecoverTask extends TaskEvent {
+public class TaskAttemptEventRecover extends TaskAttemptEvent{
 
-  private RecoveredTaskData recoverdTaskData;
-
-  public TaskEventRecoverTask(TezTaskID taskID, RecoveredTaskData recoveredTaskData) {
-    super(taskID, TaskEventType.T_RECOVER);
-    this.recoverdTaskData = recoveredTaskData;
+  private RecoveredTaskAttemptData recoveredTaskAttemptData;
+  
+  public TaskAttemptEventRecover(TezTaskAttemptID id, RecoveredTaskAttemptData recoveredTaskAttemptData) {
+    super(id, TaskAttemptEventType.TA_RECOVER);
+    this.recoveredTaskAttemptData = recoveredTaskAttemptData;
   }
 
-  public RecoveredTaskData getRecoverdTaskData() {
-    return recoverdTaskData;
+  public RecoveredTaskAttemptData getRecoveredTaskAttemptData() {
+    return recoveredTaskAttemptData;
   }
-
 }

@@ -126,6 +126,7 @@ import org.apache.tez.dag.app.dag.event.DAGAppMasterEventDAGFinished;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventSchedulingServiceError;
 import org.apache.tez.dag.app.dag.event.DAGAppMasterEventType;
 import org.apache.tez.dag.app.dag.event.DAGEvent;
+import org.apache.tez.dag.app.dag.event.DAGEventInitDag;
 import org.apache.tez.dag.app.dag.event.DAGEventRecoverEvent;
 import org.apache.tez.dag.app.dag.event.DAGEventStartDag;
 import org.apache.tez.dag.app.dag.event.DAGEventType;
@@ -138,6 +139,9 @@ import org.apache.tez.dag.app.dag.event.TaskEventType;
 import org.apache.tez.dag.app.dag.event.VertexEvent;
 import org.apache.tez.dag.app.dag.event.VertexEventType;
 import org.apache.tez.dag.app.dag.impl.DAGImpl;
+import org.apache.tez.dag.app.dag.impl.TaskAttemptImpl;
+import org.apache.tez.dag.app.dag.impl.TaskImpl;
+import org.apache.tez.dag.app.dag.impl.VertexImpl;
 import org.apache.tez.dag.app.launcher.ContainerLauncher;
 import org.apache.tez.dag.app.launcher.ContainerLauncherImpl;
 import org.apache.tez.dag.app.launcher.LocalContainerLauncher;
@@ -1689,12 +1693,27 @@ public class DAGAppMaster extends AbstractService {
         RecoveryParser recoveryParser = new RecoveryParser(
             this, recoveryFS, recoveryDataDir, appAttemptID.getAttemptId());
         RecoveredDAGData recoveredDAGData = recoveryParser.parseRecoveryData();
+        context.getCurrentDAG().restoreFromEvent(recoveredDAGData);
+        printRecoveredState();
         return recoveredDAGData;
       }
     }
     return null;
   }
   
+  private void printRecoveredState() {
+    LOG.info("DAG's recovered state:" + ((DAGImpl)context.getCurrentDAG()).recoveredState);
+    for (Vertex v : context.getCurrentDAG().getOrderededVertices()) {
+      LOG.info("Vertex's recovered state:" + ((VertexImpl)v).recoveredState + ", vertexId=" + v.getLogIdentifier());
+      for (Task task : v.getTasks().values()) {
+        LOG.info("Task's recovered state:" + ((TaskImpl)task).recoveredState + ", taskId=" + task.getTaskId());
+        for (TaskAttempt attempt : task.getAttempts().values()) {
+          LOG.info("TaskAttempt's recovered state:" + ((TaskAttemptImpl)attempt).recoveredState + ", attemptId=" + attempt.getID());
+        }
+      }
+    }
+  }
+
   @Override
   public synchronized void serviceStart() throws Exception {
 
@@ -1757,7 +1776,7 @@ public class DAGAppMaster extends AbstractService {
         if (recoveredDAGData.nonRecoverable) {
           DAGEventRecoverEvent recoverDAGEvent =
               new DAGEventRecoverEvent(recoveredDAGData.recoveredDAG.getID(),
-                  DAGState.FAILED, classpathUrls);
+                  DAGState.FAILED, classpathUrls, recoveredDAGData);
           DAGRecoveredEvent dagRecoveredEvent = new DAGRecoveredEvent(this.appAttemptID,
               recoveredDAGData.recoveredDAG.getID(), recoveredDAGData.recoveredDAG.getName(),
               recoveredDAGData.recoveredDAG.getUserName(),
@@ -1773,7 +1792,7 @@ public class DAGAppMaster extends AbstractService {
         } else {
           DAGEventRecoverEvent recoverDAGEvent =
               new DAGEventRecoverEvent(recoveredDAGData.recoveredDAG.getID(),
-                  recoveredDAGData.dagState, classpathUrls);
+                  recoveredDAGData.dagState, classpathUrls, recoveredDAGData);
           DAGRecoveredEvent dagRecoveredEvent = new DAGRecoveredEvent(this.appAttemptID,
               recoveredDAGData.recoveredDAG.getID(), recoveredDAGData.recoveredDAG.getName(),
               recoveredDAGData.recoveredDAG.getUserName(), this.clock.getTime(),
@@ -1792,7 +1811,7 @@ public class DAGAppMaster extends AbstractService {
         this.historyEventHandler.handle(new DAGHistoryEvent(recoveredDAGData.recoveredDAG.getID(),
             dagRecoveredEvent));
         DAGEventRecoverEvent recoverDAGEvent = new DAGEventRecoverEvent(
-            recoveredDAGData.recoveredDAG.getID(), classpathUrls);
+            recoveredDAGData.recoveredDAG.getID(), classpathUrls, recoveredDAGData);
         dagEventDispatcher.handle(recoverDAGEvent);
         this.state = DAGAppMasterState.RUNNING;
       }
@@ -2190,7 +2209,7 @@ public class DAGAppMaster extends AbstractService {
     // Information about this DAG is available via the context.
     sendEvent(new DAGAppMasterEvent(DAGAppMasterEventType.NEW_DAG_SUBMITTED));
     // create a job event for job initialization
-    DAGEvent initDagEvent = new DAGEvent(currentDAG.getID(), DAGEventType.DAG_INIT);
+    DAGEvent initDagEvent = new DAGEventInitDag(currentDAG.getID());
     // Send init to the job (this does NOT trigger job execution)
     // This is a synchronous call, not an event through dispatcher. We want
     // job-init to be done completely here.

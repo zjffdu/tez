@@ -135,9 +135,11 @@ import org.apache.tez.dag.app.dag.event.TaskEventScheduleTask;
 import org.apache.tez.dag.app.dag.event.TaskEventTAUpdate;
 import org.apache.tez.dag.app.dag.event.TaskEventType;
 import org.apache.tez.dag.app.dag.event.VertexEvent;
+import org.apache.tez.dag.app.dag.event.VertexEventInitVertex;
 import org.apache.tez.dag.app.dag.event.VertexEventRootInputFailed;
 import org.apache.tez.dag.app.dag.event.VertexEventRootInputInitialized;
 import org.apache.tez.dag.app.dag.event.VertexEventRouteEvent;
+import org.apache.tez.dag.app.dag.event.VertexEventStartVertex;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskAttemptCompleted;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskCompleted;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskReschedule;
@@ -2287,8 +2289,7 @@ public class TestVertexImpl {
 
   private void initVertex(VertexImpl v) {
     Assert.assertEquals(VertexState.NEW, v.getState());
-    dispatcher.getEventHandler().handle(new VertexEvent(v.getVertexId(),
-          VertexEventType.V_INIT));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(v.getVertexId()));
     dispatcher.await();
   }
 
@@ -2307,8 +2308,7 @@ public class TestVertexImpl {
   private void startVertex(VertexImpl v,
       boolean checkRunningState) {
     Assert.assertEquals(VertexState.INITED, v.getState());
-    dispatcher.getEventHandler().handle(new VertexEvent(v.getVertexId(),
-          VertexEventType.V_START));
+    dispatcher.getEventHandler().handle(new VertexEventStartVertex(v.getVertexId()));
     dispatcher.await();
     if (checkRunningState) {
       Assert.assertEquals(VertexState.RUNNING, v.getState());
@@ -5002,10 +5002,10 @@ public class TestVertexImpl {
       v.setInputVertices(new HashMap());
       vertexIdMap.put(vId, v);
       vertices.put(v.getName(), v);
-      v.handle(new VertexEvent(vId, VertexEventType.V_INIT));
+      v.handle(new VertexEventInitVertex(vId));
       dispatcher.await();
       Assert.assertEquals(VertexState.INITED, v.getState());
-      v.handle(new VertexEvent(vId, VertexEventType.V_START));
+      v.handle(new VertexEventStartVertex(vId));
       dispatcher.await();
       Assert.assertEquals(VertexState.SUCCEEDED, v.getState());
     } finally {
@@ -5324,10 +5324,8 @@ public class TestVertexImpl {
     
     vB.vertexReconfigurationPlanned();
     
-    dispatcher.getEventHandler().handle(new VertexEvent(vA.getVertexId(),
-      VertexEventType.V_INIT));
-    dispatcher.getEventHandler().handle(new VertexEvent(vA.getVertexId(),
-      VertexEventType.V_START));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(vA.getVertexId()));
+    dispatcher.getEventHandler().handle(new VertexEventStartVertex(vA.getVertexId()));
 
     dispatcher.await();
     Assert.assertEquals(VertexState.INITIALIZING, vA.getState());
@@ -5408,14 +5406,10 @@ public class TestVertexImpl {
     VertexImpl vB = vertices.get("B");
     VertexImpl vC = vertices.get("C");
 
-    dispatcher.getEventHandler().handle(new VertexEvent(vA.getVertexId(),
-        VertexEventType.V_INIT));
-    dispatcher.getEventHandler().handle(new VertexEvent(vA.getVertexId(),
-        VertexEventType.V_START));
-    dispatcher.getEventHandler().handle(new VertexEvent(vB.getVertexId(),
-        VertexEventType.V_INIT));
-    dispatcher.getEventHandler().handle(new VertexEvent(vB.getVertexId(),
-        VertexEventType.V_START));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(vA.getVertexId()));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(vA.getVertexId()));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(vB.getVertexId()));
+    dispatcher.getEventHandler().handle(new VertexEventStartVertex(vB.getVertexId()));
 
     dispatcher.await();
     Assert.assertEquals(VertexState.RUNNING, vA.getState());
@@ -5451,8 +5445,7 @@ public class TestVertexImpl {
 
     VertexImplWithControlledInitializerManager v1 = (VertexImplWithControlledInitializerManager) vertices
         .get("vertex1");
-    dispatcher.getEventHandler().handle(new VertexEvent(v1.getVertexId(),
-        VertexEventType.V_INIT));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(v1.getVertexId()));
     dispatcher.await();
 
     RootInputInitializerManagerControlled initializerManager1 = v1.getRootInputInitializerManager();
@@ -5475,8 +5468,7 @@ public class TestVertexImpl {
 
     VertexImplWithControlledInitializerManager v1 = (VertexImplWithControlledInitializerManager) vertices
         .get("vertex1");
-    dispatcher.getEventHandler().handle(new VertexEvent(v1.getVertexId(),
-        VertexEventType.V_INIT));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(v1.getVertexId()));
     // wait to ensure init is completed, so that rootInitManager is not null
     dispatcher.await();
 
@@ -5538,8 +5530,7 @@ public class TestVertexImpl {
 
     VertexImplWithControlledInitializerManager v1 = (VertexImplWithControlledInitializerManager) vertices
         .get("vertex1");
-    dispatcher.getEventHandler().handle(new VertexEvent(v1.getVertexId(),
-        VertexEventType.V_INIT));
+    dispatcher.getEventHandler().handle(new VertexEventInitVertex(v1.getVertexId()));
     // wait to ensure init is completed, so that rootInitManager is not null
     dispatcher.await();
     RootInputInitializerManagerControlled initializerManager1 = v1.getRootInputInitializerManager();

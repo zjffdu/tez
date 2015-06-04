@@ -73,7 +73,7 @@ public class RecoveryService extends AbstractService {
   private Set<TezDAGID> completedDAGs = new HashSet<TezDAGID>();
   private Set<TezDAGID> skippedDAGs = new HashSet<TezDAGID>();
 
-  private Thread eventHandlingThread;
+  public Thread eventHandlingThread;
   private AtomicBoolean stopped = new AtomicBoolean(false);
   private AtomicBoolean started = new AtomicBoolean(false);
   private int eventCounter = 0;
@@ -477,5 +477,9 @@ public class RecoveryService extends AbstractService {
     while (!this.drained) {
       Thread.yield();
     }
+  }
+  
+  public void setStopped(boolean stopped) {
+    this.stopped.set(stopped);
   }
 }

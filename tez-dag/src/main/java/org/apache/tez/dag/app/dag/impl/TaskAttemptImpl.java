@@ -60,6 +60,7 @@ import org.apache.tez.dag.api.oldrecords.TaskAttemptReport;
 import org.apache.tez.dag.api.oldrecords.TaskAttemptState;
 import org.apache.tez.dag.app.AppContext;
 import org.apache.tez.dag.app.ContainerContext;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskAttemptData;
 import org.apache.tez.dag.app.TaskAttemptListener;
 import org.apache.tez.dag.app.TaskHeartbeatHandler;
 import org.apache.tez.dag.app.dag.Task;
@@ -75,6 +76,7 @@ import org.apache.tez.dag.app.dag.event.TaskAttemptEvent;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventAttemptFailed;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventContainerTerminated;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventDiagnosticsUpdate;
+import org.apache.tez.dag.app.dag.event.TaskAttemptEventRecover;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventTerminationCauseEvent;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventOutputFailed;
 import org.apache.tez.dag.app.dag.event.TaskAttemptEventSchedule;
@@ -107,6 +109,7 @@ import org.apache.tez.runtime.api.impl.TezEvent;
 import org.apache.tez.runtime.api.impl.EventMetaData.EventProducerConsumerType;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
 
 public class TaskAttemptImpl implements TaskAttempt,
@@ -400,8 +403,8 @@ public class TaskAttemptImpl implements TaskAttempt,
 
         .installTopology();
 
-  private TaskAttemptState recoveredState = TaskAttemptState.NEW;
-  private boolean recoveryStartEventSeen = false;
+  public TaskAttemptState recoveredState = TaskAttemptState.NEW;
+  private RecoveredTaskAttemptData recoveredTaskAttemptData;
 
   @SuppressWarnings("rawtypes")
   public TaskAttemptImpl(TezTaskID taskId, int attemptNumber, EventHandler eventHandler,
@@ -735,47 +738,57 @@ public class TaskAttemptImpl implements TaskAttempt,
     }
   }
 
-  @Override
-  public TaskAttemptState restoreFromEvent(HistoryEvent historyEvent) {
-    writeLock.lock();
-    try {
-      switch (historyEvent.getEventType()) {
-        case TASK_ATTEMPT_STARTED:
-        {
-          TaskAttemptStartedEvent tEvent = (TaskAttemptStartedEvent) historyEvent;
-          this.launchTime = tEvent.getStartTime();
-          recoveryStartEventSeen = true;
-          recoveredState = TaskAttemptState.RUNNING;
-          this.containerId = tEvent.getContainerId();
-          sendEvent(createDAGCounterUpdateEventTALaunched(this));
-          return recoveredState;
+  public TaskAttemptState restoreFromEvent(RecoveredTaskAttemptData recoveredTaskAttemptData) {
+    this.recoveredTaskAttemptData = recoveredTaskAttemptData;
+    TaskAttemptStartedEvent taStartedEvent = null;
+    TaskAttemptFinishedEvent taFinishedEvent = null;
+    for (HistoryEvent event : recoveredTaskAttemptData.getTaskAttemptRecoveryEvent()) {
+      LOG.info("Restore from RecoveryEvent:" + event.getEventType() + ", " + event);
+      switch (event.getEventType()) {
+      case TASK_ATTEMPT_STARTED:
+        if (taStartedEvent == null) {
+          taStartedEvent = (TaskAttemptStartedEvent)event;
+        } else {
+          throw new TezUncheckedException("Multiple TaskAttemptStartedEvent for taskAttemptId=" + attemptId);
         }
-        case TASK_ATTEMPT_FINISHED:
-        {
-          if (!recoveryStartEventSeen) {
-            throw new RuntimeException("Finished Event seen but"
-                + " no Started Event was encountered earlier");
-          }
-          TaskAttemptFinishedEvent tEvent = (TaskAttemptFinishedEvent) historyEvent;
-          this.finishTime = tEvent.getFinishTime();
-          this.reportedStatus.counters = tEvent.getCounters();
-          this.reportedStatus.progress = 1f;
-          this.reportedStatus.state = tEvent.getState();
-          this.terminationCause = tEvent.getTaskAttemptError() != null ? tEvent.getTaskAttemptError()
-              : TaskAttemptTerminationCause.UNKNOWN_ERROR;
-          this.diagnostics.add(tEvent.getDiagnostics());
-          this.recoveredState = tEvent.getState();
-          sendEvent(createDAGCounterUpdateEventTAFinished(this, tEvent.getState()));
-          return recoveredState;
+        break;
+      case TASK_ATTEMPT_FINISHED:
+        if (taStartedEvent == null) {
+          throw new TezUncheckedException("Finished Event seen but"
+            + " no Started Event was encountered earlier");
         }
-        default:
-          throw new RuntimeException("Unexpected event received for restoring"
-              + " state, eventType=" + historyEvent.getEventType());
-  
+        // And it is also possible to have multiple TaskAttemptFinishedEvent, should track the last one.
+        taFinishedEvent = (TaskAttemptFinishedEvent)event;
+        break;
+      default:
+        throw new TezUncheckedException("Invalid recovery event type for TaskAttempt"
+            + ", taskAttemptId=" + attemptId
+            + ", eventType=" + event.getEventType());
       }
-    } finally {
-      writeLock.unlock();
     }
+    
+    this.recoveredState = TaskAttemptState.NEW;
+    if (taStartedEvent != null) {
+      this.launchTime = taStartedEvent.getStartTime();
+      this.containerId = taStartedEvent.getContainerId();
+      // started but not finished
+      if (taFinishedEvent == null) {
+        this.recoveredState = TaskAttemptState.RUNNING;
+      }
+    }
+
+    if (taFinishedEvent != null) {
+      this.finishTime = taFinishedEvent.getFinishTime();
+      this.reportedStatus.counters = taFinishedEvent.getCounters();
+      this.reportedStatus.progress = 1f;
+      this.reportedStatus.state = taFinishedEvent.getState();
+      this.terminationCause = taFinishedEvent.getTaskAttemptError() != null ? taFinishedEvent.getTaskAttemptError()
+          : TaskAttemptTerminationCause.UNKNOWN_ERROR;
+      this.diagnostics.add(taFinishedEvent.getDiagnostics());
+      this.recoveredState = TaskAttemptState.valueOf(taFinishedEvent.getState().name());
+    }
+
+    return recoveredState;
   }
 
   @SuppressWarnings("unchecked")
@@ -948,55 +961,61 @@ public class TaskAttemptImpl implements TaskAttempt,
   }
 
   protected void logJobHistoryAttemptStarted() {
-    final String containerIdStr = containerId.toString();
-    String inProgressLogsUrl = nodeHttpAddress
-       + "/" + "node/containerlogs"
-       + "/" + containerIdStr
-       + "/" + this.appContext.getUser();
-    String completedLogsUrl = "";
-    if (conf.getBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED,
-        YarnConfiguration.DEFAULT_LOG_AGGREGATION_ENABLED)
-        && conf.get(YarnConfiguration.YARN_LOG_SERVER_URL) != null) {
-      String contextStr = "v_" + getVertex().getName()
-          + "_" + this.attemptId.toString();
-      completedLogsUrl = conf.get(YarnConfiguration.YARN_LOG_SERVER_URL)
-          + "/" + containerNodeId.toString()
-          + "/" + containerIdStr
-          + "/" + contextStr
-          + "/" + this.appContext.getUser();
+    if (recoveredTaskAttemptData == null || !recoveredTaskAttemptData.recoveredStartedEventSeen) {
+      final String containerIdStr = containerId.toString();
+      String inProgressLogsUrl = nodeHttpAddress
+         + "/" + "node/containerlogs"
+         + "/" + containerIdStr
+         + "/" + this.appContext.getUser();
+      String completedLogsUrl = "";
+      if (conf.getBoolean(YarnConfiguration.LOG_AGGREGATION_ENABLED,
+          YarnConfiguration.DEFAULT_LOG_AGGREGATION_ENABLED)
+          && conf.get(YarnConfiguration.YARN_LOG_SERVER_URL) != null) {
+        String contextStr = "v_" + task.getVertex().getName()
+            + "_" + this.attemptId.toString();
+        completedLogsUrl = conf.get(YarnConfiguration.YARN_LOG_SERVER_URL)
+            + "/" + containerNodeId.toString()
+            + "/" + containerIdStr
+            + "/" + contextStr
+            + "/" + this.appContext.getUser();
+      }
+      TaskAttemptStartedEvent startEvt = new TaskAttemptStartedEvent(
+          attemptId, task.getVertex().getName(),
+          launchTime, containerId, containerNodeId,
+          inProgressLogsUrl, completedLogsUrl, nodeHttpAddress);
+      this.appContext.getHistoryHandler().handle(
+          new DAGHistoryEvent(getDAGID(), startEvt));
     }
-    TaskAttemptStartedEvent startEvt = new TaskAttemptStartedEvent(
-        attemptId, getVertex().getName(),
-        launchTime, containerId, containerNodeId,
-        inProgressLogsUrl, completedLogsUrl, nodeHttpAddress);
-    this.appContext.getHistoryHandler().handle(
-        new DAGHistoryEvent(getDAGID(), startEvt));
   }
 
   protected void logJobHistoryAttemptFinishedEvent(TaskAttemptStateInternal state) {
-    //Log finished events only if an attempt started.
-    if (getLaunchTime() == 0) return;
-
-    TaskAttemptFinishedEvent finishEvt = new TaskAttemptFinishedEvent(
-        attemptId, getVertex().getName(), getLaunchTime(),
-        getFinishTime(), TaskAttemptState.SUCCEEDED, null,
-        "", getCounters());
-    // FIXME how do we store information regd completion events
-    this.appContext.getHistoryHandler().handle(
-        new DAGHistoryEvent(getDAGID(), finishEvt));
+    if (recoveredTaskAttemptData == null || !recoveredTaskAttemptData.recoveredFinishedEventSeen) {
+      //Log finished events only if an attempt started.
+      if (getLaunchTime() == 0) return;
+  
+      TaskAttemptFinishedEvent finishEvt = new TaskAttemptFinishedEvent(
+          attemptId, task.getVertex().getName(), getLaunchTime(),
+          getFinishTime(), TaskAttemptState.SUCCEEDED, null,
+          "", getCounters());
+      // FIXME how do we store information regd completion events
+      this.appContext.getHistoryHandler().handle(
+          new DAGHistoryEvent(getDAGID(), finishEvt));
+    }
   }
 
   protected void logJobHistoryAttemptUnsuccesfulCompletion(
       TaskAttemptState state) {
-    TaskAttemptFinishedEvent finishEvt = new TaskAttemptFinishedEvent(
-        attemptId, getVertex().getName(), getLaunchTime(),
-        clock.getTime(), state,
-        terminationCause,
-        StringUtils.join(
-            getDiagnostics(), LINE_SEPARATOR), getCounters());
-    // FIXME how do we store information regd completion events
-    this.appContext.getHistoryHandler().handle(
-        new DAGHistoryEvent(getDAGID(), finishEvt));
+    if (recoveredTaskAttemptData == null || !recoveredTaskAttemptData.recoveredFinishedEventSeen) {
+      TaskAttemptFinishedEvent finishEvt = new TaskAttemptFinishedEvent(
+          attemptId, task.getVertex().getName(), getLaunchTime(),
+          clock.getTime(), state,
+          terminationCause,
+          StringUtils.join(
+              getDiagnostics(), LINE_SEPARATOR), getCounters());
+      // FIXME how do we store information regd completion events
+      this.appContext.getHistoryHandler().handle(
+          new DAGHistoryEvent(getDAGID(), finishEvt));
+    }
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -1399,6 +1418,15 @@ public class TaskAttemptImpl implements TaskAttempt,
       TaskAttemptStateInternal endState = TaskAttemptStateInternal.FAILED;
       switch(taskAttempt.recoveredState) {
         case NEW:
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId,
+              TaskEventType.T_ATTEMPT_KILLED));
+          taskAttempt.sendEvent(createDAGCounterUpdateEventTAFinished(taskAttempt,
+              getExternalState(TaskAttemptStateInternal.KILLED)));
+          // don't log TaskAttemptFinishedEvent because there's no TaskAttemptStartedEvent
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId,
+              TaskEventType.T_ATTEMPT_KILLED));
+          endState = TaskAttemptStateInternal.KILLED;
+          break;
         case RUNNING:
           // FIXME once running containers can be recovered, this
           // should be handled differently
@@ -1408,18 +1436,23 @@ public class TaskAttemptImpl implements TaskAttempt,
           taskAttempt.sendEvent(createDAGCounterUpdateEventTAFinished(taskAttempt,
               getExternalState(TaskAttemptStateInternal.KILLED)));
           taskAttempt.logJobHistoryAttemptUnsuccesfulCompletion(TaskAttemptState.KILLED);
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId,
+              TaskEventType.T_ATTEMPT_KILLED));
           endState = TaskAttemptStateInternal.KILLED;
           break;
         case SUCCEEDED:
-          // Do not inform Task as it already knows about completed attempts
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId, TaskEventType.T_ATTEMPT_SUCCEEDED));
+          taskAttempt.sendEvent(TaskAttemptImpl.createDAGCounterUpdateEventTAFinished(taskAttempt, TaskAttemptState.SUCCEEDED));
           endState = TaskAttemptStateInternal.SUCCEEDED;
           break;
         case FAILED:
-          // Do not inform Task as it already knows about completed attempts
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId, TaskEventType.T_ATTEMPT_FAILED));
+          taskAttempt.sendEvent(TaskAttemptImpl.createDAGCounterUpdateEventTAFinished(taskAttempt, TaskAttemptState.FAILED));
           endState = TaskAttemptStateInternal.FAILED;
           break;
         case KILLED:
-          // Do not inform Task as it already knows about completed attempts
+          taskAttempt.sendEvent(new TaskEventTAUpdate(taskAttempt.attemptId, TaskEventType.T_ATTEMPT_KILLED));
+          taskAttempt.sendEvent(TaskAttemptImpl.createDAGCounterUpdateEventTAFinished(taskAttempt, TaskAttemptState.KILLED));
           endState = TaskAttemptStateInternal.KILLED;
           break;
         default:
@@ -1428,9 +1461,10 @@ public class TaskAttemptImpl implements TaskAttempt,
               + ", state=" + taskAttempt.recoveredState);
       }
 
+      LOG.info("TaskAttempt is recovered to state:" + endState +
+          ", attemptId=" + taskAttempt.getID());
       return endState;
     }
-
   }
 
   protected static class TerminatedAfterSuccessTransition implements

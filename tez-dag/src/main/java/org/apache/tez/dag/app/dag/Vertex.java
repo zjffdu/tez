@@ -46,6 +46,7 @@ import org.apache.tez.dag.api.client.ProgressBuilder;
 import org.apache.tez.dag.api.client.VertexStatusBuilder;
 import org.apache.tez.dag.app.AppContext;
 import org.apache.tez.dag.app.TaskAttemptEventInfo;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredVertexData;
 import org.apache.tez.dag.app.dag.event.SpeculatorEvent;
 import org.apache.tez.dag.app.dag.impl.AMUserCodeException;
 import org.apache.tez.dag.app.dag.impl.Edge;
@@ -160,7 +161,7 @@ public interface Vertex extends Comparable<Vertex> {
   // internal apis
   AppContext getAppContext();
 
-  VertexState restoreFromEvent(HistoryEvent event);
+  VertexState restoreFromEvent(RecoveredVertexData recoveredVertexData);
 
   String getLogIdentifier();
 

@@ -18,6 +18,7 @@
 
 package org.apache.tez.dag.app.dag;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +34,7 @@ import org.apache.tez.dag.api.client.DAGStatusBuilder;
 import org.apache.tez.dag.api.client.StatusGetOpts;
 import org.apache.tez.dag.api.client.VertexStatusBuilder;
 import org.apache.tez.dag.api.records.DAGProtos.DAGPlan;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredDAGData;
 import org.apache.tez.common.security.ACLManager;
 import org.apache.tez.dag.history.HistoryEvent;
 import org.apache.tez.dag.records.TezDAGID;
@@ -65,6 +67,7 @@ public interface DAG {
    */
   Vertex getVertex(String vertexName);
   Map<TezVertexID,Vertex> getVertices();
+  Collection<Vertex> getOrderededVertices(); 
   Vertex getVertex(TezVertexID vertexId);
   List<String> getDiagnostics();
   int getTotalVertices();
@@ -88,7 +91,7 @@ public interface DAG {
   
   UserGroupInformation getDagUGI();
 
-  DAGState restoreFromEvent(HistoryEvent historyEvent);
+  DAGState restoreFromEvent(RecoveredDAGData recoveredDagData);
 
   ACLManager getACLManager();
 

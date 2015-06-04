@@ -17,20 +17,20 @@
 
 package org.apache.tez.dag.app.dag.event;
 
-import org.apache.tez.dag.app.dag.VertexState;
+
+import org.apache.tez.dag.app.RecoveryParser.RecoveredVertexData;
 import org.apache.tez.dag.records.TezVertexID;
 
 public class VertexEventRecoverVertex extends VertexEvent {
 
-  VertexState desiredState;
+  private RecoveredVertexData recoveredVertexData;
 
-  public VertexEventRecoverVertex(TezVertexID vertexId, VertexState desiredState) {
+  public VertexEventRecoverVertex(TezVertexID vertexId, RecoveredVertexData recoveredVertexData) {
     super(vertexId, VertexEventType.V_RECOVER);
-    this.desiredState = desiredState;
+    this.recoveredVertexData = recoveredVertexData;
   }
 
-  public VertexState getDesiredState() {
-    return desiredState;
+  public RecoveredVertexData getVertexRecoveryData() {
+    return recoveredVertexData;
   }
-
 }

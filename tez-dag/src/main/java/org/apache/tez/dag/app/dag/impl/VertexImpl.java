@@ -92,6 +92,8 @@ import org.apache.tez.dag.api.records.DAGProtos.VertexPlan;
 import org.apache.tez.dag.app.AppContext;
 import org.apache.tez.dag.app.ContainerContext;
 import org.apache.tez.dag.app.TaskAttemptEventInfo;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredTaskData;
+import org.apache.tez.dag.app.RecoveryParser.RecoveredVertexData;
 import org.apache.tez.dag.app.TaskAttemptListener;
 import org.apache.tez.dag.app.TaskHeartbeatHandler;
 import org.apache.tez.dag.app.dag.DAG;
@@ -119,6 +121,7 @@ import org.apache.tez.dag.app.dag.event.TaskEventTermination;
 import org.apache.tez.dag.app.dag.event.TaskEventType;
 import org.apache.tez.dag.app.dag.event.VertexEvent;
 import org.apache.tez.dag.app.dag.event.VertexEventCommitCompleted;
+import org.apache.tez.dag.app.dag.event.VertexEventInitVertex;
 import org.apache.tez.dag.app.dag.event.VertexEventInputDataInformation;
 import org.apache.tez.dag.app.dag.event.VertexEventManagerUserCodeError;
 import org.apache.tez.dag.app.dag.event.VertexEventNullEdgeInitialized;
@@ -127,8 +130,8 @@ import org.apache.tez.dag.app.dag.event.VertexEventRootInputFailed;
 import org.apache.tez.dag.app.dag.event.VertexEventRootInputInitialized;
 import org.apache.tez.dag.app.dag.event.VertexEventRouteEvent;
 import org.apache.tez.dag.app.dag.event.VertexEventSourceTaskAttemptCompleted;
-import org.apache.tez.dag.app.dag.event.VertexEventSourceVertexRecovered;
 import org.apache.tez.dag.app.dag.event.VertexEventSourceVertexStarted;
+import org.apache.tez.dag.app.dag.event.VertexEventStartVertex;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskAttemptCompleted;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskCompleted;
 import org.apache.tez.dag.app.dag.event.VertexEventTaskReschedule;
@@ -267,7 +270,12 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
   private static final VertexStateChangedCallback STATE_CHANGED_CALLBACK =
       new VertexStateChangedCallback();
 
-  private VertexState recoveredState = VertexState.NEW;
+  public VertexState recoveredState = VertexState.NEW;
+  private RecoveredVertexData recoveredVertexData;
+  boolean isInRecovery = false;
+
+  VertexStartedEvent recoveredVertexStartedEvent = null;
+
   @VisibleForTesting
   List<TezEvent> recoveredEvents = new ArrayList<TezEvent>();
   private boolean vertexAlreadyInitialized = false;
@@ -308,20 +316,10 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
           .addTransition
               (VertexState.NEW,
                   EnumSet.of(VertexState.NEW, VertexState.INITED,
-                      VertexState.INITIALIZING, VertexState.RUNNING,
+                      VertexState.RUNNING,
                       VertexState.SUCCEEDED, VertexState.FAILED,
-                      VertexState.KILLED, VertexState.ERROR,
-                      VertexState.RECOVERING),
+                      VertexState.KILLED, VertexState.ERROR),
                   VertexEventType.V_RECOVER,
-                  new StartRecoverTransition())
-          .addTransition
-              (VertexState.NEW,
-                  EnumSet.of(VertexState.NEW, VertexState.INITED,
-                      VertexState.INITIALIZING, VertexState.RUNNING,
-                      VertexState.SUCCEEDED, VertexState.FAILED,
-                      VertexState.KILLED, VertexState.ERROR,
-                      VertexState.RECOVERING),
-                  VertexEventType.V_SOURCE_VERTEX_RECOVERED,
                   new RecoverTransition())
           .addTransition(VertexState.NEW, VertexState.NEW,
               VertexEventType.V_SOURCE_VERTEX_STARTED,
@@ -341,13 +339,6 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
                       VertexState.RECOVERING),
                   VertexEventType.V_SOURCE_VERTEX_RECOVERED,
                   new RecoverTransition())
-          .addTransition
-              (VertexState.RECOVERING, VertexState.RECOVERING,
-                  EnumSet.of(VertexEventType.V_INIT,
-                      VertexEventType.V_ROUTE_EVENT,
-                      VertexEventType.V_SOURCE_VERTEX_STARTED,
-                      VertexEventType.V_SOURCE_TASK_ATTEMPT_COMPLETED),
-                  new BufferDataRecoverTransition())
           .addTransition
               (VertexState.RECOVERING, VertexState.RECOVERING,
                   VertexEventType.V_TERMINATE,
@@ -1280,92 +1271,78 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     this.recoveredRootInputSpecUpdates = rootInputSpecUpdates;
   }
 
-  @Override
-  public VertexState restoreFromEvent(HistoryEvent historyEvent) {
-    writeLock.lock();
-    try {
-      switch (historyEvent.getEventType()) {
-        case VERTEX_INITIALIZED:
-          recoveryInitEventSeen = true;
-          recoveredState = setupVertex((VertexInitializedEvent) historyEvent);
-          createTasks();
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Recovered state for vertex after Init event"
-                + ", vertex=" + logIdentifier
-                + ", recoveredState=" + recoveredState);
-          }
-          return recoveredState;
-        case VERTEX_STARTED:
-          if (!recoveryInitEventSeen) {
-            throw new RuntimeException("Started Event seen but"
-                + " no Init Event was encountered earlier");
-          }
-          recoveryStartEventSeen = true;
-          VertexStartedEvent startedEvent = (VertexStartedEvent) historyEvent;
-          startTimeRequested = startedEvent.getStartRequestedTime();
-          startedTime = startedEvent.getStartTime();
-          recoveredState = VertexState.RUNNING;
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Recovered state for vertex after Started event"
-                + ", vertex=" + logIdentifier
-                + ", recoveredState=" + recoveredState);
-          }
-          return recoveredState;
-        case VERTEX_PARALLELISM_UPDATED:
-          // TODO TEZ-1019 this should flow through setParallelism method
-          VertexParallelismUpdatedEvent updatedEvent =
-              (VertexParallelismUpdatedEvent) historyEvent;
-          int oldNumTasks = numTasks;
-          int newNumTasks = updatedEvent.getNumTasks();
-          handleParallelismUpdate(newNumTasks, updatedEvent.getSourceEdgeProperties(),
-            updatedEvent.getRootInputSpecUpdates(), oldNumTasks);
-          Preconditions.checkState(this.numTasks == newNumTasks, getLogIdentifier());
-          if (updatedEvent.getVertexLocationHint() != null) {
-            setVertexLocationHint(updatedEvent.getVertexLocationHint());
-          }
-          stateChangeNotifier.stateChanged(vertexId,
-              new VertexStateUpdateParallelismUpdated(vertexName, numTasks, oldNumTasks));
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Recovered state for vertex after parallelism updated event"
-                + ", vertex=" + logIdentifier
-                + ", recoveredState=" + recoveredState);
-          }
-          return recoveredState;
-        case VERTEX_COMMIT_STARTED:
-          recoveryCommitInProgress = true;
-          hasCommitter = true;
-          return recoveredState;
-        case VERTEX_FINISHED:
-          VertexFinishedEvent finishedEvent = (VertexFinishedEvent) historyEvent;
-          if (finishedEvent.isFromSummary()) {
-            summaryCompleteSeen  = true;
-          } else {
-            vertexCompleteSeen = true;
-          }
-          numTasks = finishedEvent.getNumTasks();
-          recoveryCommitInProgress = false;
-          recoveredState = finishedEvent.getState();
-          diagnostics.add(finishedEvent.getDiagnostics());
-          finishTime = finishedEvent.getFinishTime();
-          // TODO counters ??
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Recovered state for vertex after finished event"
-                + ", vertex=" + logIdentifier
-                + ", recoveredState=" + recoveredState);
-          }
-          return recoveredState;
-        case VERTEX_DATA_MOVEMENT_EVENTS_GENERATED:
-          VertexRecoverableEventsGeneratedEvent vEvent =
-              (VertexRecoverableEventsGeneratedEvent) historyEvent;
-          this.recoveredEvents.addAll(vEvent.getTezEvents());
-          return recoveredState;
-        default:
-          throw new RuntimeException("Unexpected event received for restoring"
-              + " state, eventType=" + historyEvent.getEventType());
-      }
-    } finally {
-      writeLock.unlock();
+  public VertexState restoreFromEvent(RecoveredVertexData recoveredVertexData) {
+    this.isInRecovery = true;
+    this.recoveredVertexData = recoveredVertexData;
+    // it is possible there's no any RecoveryEvent for this vertex
+    if (recoveredVertexData == null) {
+      return this.recoveredState;
     }
+
+    for (HistoryEvent event : recoveredVertexData.getVertexRecoveryEvents()) {
+      LOG.info("Restore from RecoveryEvent:" + event.getEventType() + ", " + event);
+      switch (event.getEventType()) {
+      case VERTEX_INITIALIZED:
+        VertexState vertexState = new InitTransition().transition(this,
+            new VertexEventInitVertex(vertexId, (VertexInitializedEvent)event));
+        Preconditions.checkArgument(vertexState == VertexState.INITED,
+            "Vertex can not recover to INITED, vertexId=" + logIdentifier
+            + ", vertexState=" + vertexState);
+        this.recoveredState = VertexState.INITED;
+        break;
+ 
+      case VERTEX_PARALLELISM_UPDATED:
+        VertexParallelismUpdatedEvent updatedEvent =
+            (VertexParallelismUpdatedEvent) event;
+        int oldNumTasks = this.numTasks;
+        int newNumTasks = updatedEvent.getNumTasks();
+        this.handleParallelismUpdate(newNumTasks, updatedEvent.getSourceEdgeProperties(),
+          updatedEvent.getRootInputSpecUpdates(), oldNumTasks);
+        Preconditions.checkState(this.numTasks == newNumTasks, this.getLogIdentifier());
+        if (updatedEvent.getVertexLocationHint() != null) {
+          this.setVertexLocationHint(updatedEvent.getVertexLocationHint());
+        }
+        this.stateChangeNotifier.stateChanged(this.vertexId,
+            new VertexStateUpdateParallelismUpdated(this.vertexName, this.numTasks, oldNumTasks));
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Recovered state for vertex after parallelism updated event"
+              + ", vertex=" + logIdentifier);
+        }
+        break;
+
+      case VERTEX_STARTED:
+        for (Map.Entry<TezTaskID, RecoveredTaskData> entry 
+            : recoveredVertexData.getTaskRecoveryData().entrySet()) {
+          TezTaskID taskId = entry.getKey();
+          RecoveredTaskData recoveredTaskData = entry.getValue();
+          ((TaskImpl)getTask(taskId)).restoreFromEvent(recoveredTaskData);
+        }
+        this.recoveredState = VertexState.RUNNING;
+        this.recoveredVertexStartedEvent = (VertexStartedEvent) event;
+        break;
+
+      case VERTEX_DATA_MOVEMENT_EVENTS_GENERATED:
+        VertexRecoverableEventsGeneratedEvent vEvent =
+          (VertexRecoverableEventsGeneratedEvent) event;
+        // TODO don't log it if it is recovered.
+        new RouteEventTransition().transition(this, new VertexEventRouteEvent(vertexId, vEvent.getTezEvents()));
+        break;
+      case VERTEX_FINISHED:
+        VertexFinishedEvent vertexFinishedEvent = (VertexFinishedEvent)event;
+        this.numTasks = vertexFinishedEvent.getNumTasks();
+        this.diagnostics.add(vertexFinishedEvent.getDiagnostics());
+        this.finishTime = vertexFinishedEvent.getFinishTime();
+        this.recoveredState = vertexFinishedEvent.getState();
+        break;
+
+      default:
+        throw new TezUncheckedException("Invalid recovery event for vertex"
+            + ", vertexId=" + logIdentifier
+            + ", eventType=" + event.getEventType());
+      }
+    }
+
+    return this.recoveredState;
   }
 
   @Override
@@ -1850,28 +1827,36 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
 
 
   void logJobHistoryVertexInitializedEvent() {
-    VertexInitializedEvent initEvt = new VertexInitializedEvent(vertexId, vertexName,
-        initTimeRequested, initedTime, numTasks,
-        getProcessorName(), getAdditionalInputs());
-    this.appContext.getHistoryHandler().handle(
-        new DAGHistoryEvent(getDAGId(), initEvt));
+    if (recoveredVertexData == null || !recoveredVertexData.recoveredInitedEventSeen) {
+      VertexInitializedEvent initEvt = new VertexInitializedEvent(vertexId, vertexName,
+          initTimeRequested, initedTime, numTasks,
+          getProcessorName(), getAdditionalInputs());
+      this.appContext.getHistoryHandler().handle(
+          new DAGHistoryEvent(getDAGId(), initEvt));
+    }
   }
 
   void logJobHistoryVertexStartedEvent() {
-    VertexStartedEvent startEvt = new VertexStartedEvent(vertexId,
-        startTimeRequested, startedTime);
-    this.appContext.getHistoryHandler().handle(
-        new DAGHistoryEvent(getDAGId(), startEvt));
+    if (recoveredVertexData == null || !recoveredVertexData.recoveredStartedEventSeen) {
+      VertexStartedEvent startEvt = new VertexStartedEvent(vertexId,
+          startTimeRequested, startedTime);
+      this.appContext.getHistoryHandler().handle(
+          new DAGHistoryEvent(getDAGId(), startEvt));
+    }
   }
 
   void logJobHistoryVertexFinishedEvent() throws IOException {
-    this.setFinishTime();
-    logJobHistoryVertexCompletedHelper(VertexState.SUCCEEDED, finishTime, "");
+    if (recoveredVertexData == null || !recoveredVertexData.recoveredFinishedEventSeen) {
+      this.setFinishTime();
+      logJobHistoryVertexCompletedHelper(VertexState.SUCCEEDED, finishTime, "");
+    }
   }
 
   void logJobHistoryVertexFailedEvent(VertexState state) throws IOException {
-    logJobHistoryVertexCompletedHelper(state, clock.getTime(),
-        StringUtils.join(getDiagnostics(), LINE_SEPARATOR));
+    if (recoveredVertexData == null || !recoveredVertexData.recoveredFinishedEventSeen) {
+      logJobHistoryVertexCompletedHelper(state, clock.getTime(),
+          StringUtils.join(getDiagnostics(), LINE_SEPARATOR));
+    }
   }
 
   private void logJobHistoryVertexCompletedHelper(VertexState finalState, long finishTime,
@@ -2186,7 +2171,6 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
 
     // TODO: Metrics
     initedTime = clock.getTime();
-
     logJobHistoryVertexInitializedEvent();
     return true;
   }
@@ -2289,9 +2273,6 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     }
   }
 
-  private VertexState setupVertex() {
-    return setupVertex(null);
-  }
 
   private VertexState setupVertex(VertexInitializedEvent event) {
 
@@ -2475,248 +2456,6 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     }
   }
 
-  public static class StartRecoverTransition implements
-      MultipleArcTransition<VertexImpl, VertexEvent, VertexState> {
-
-    @Override
-    public VertexState transition(VertexImpl vertex, VertexEvent vertexEvent) {
-      VertexEventRecoverVertex recoverEvent = (VertexEventRecoverVertex) vertexEvent;
-      VertexState desiredState = recoverEvent.getDesiredState();
-
-      switch (desiredState) {
-        case RUNNING:
-          break;
-        case SUCCEEDED:
-        case KILLED:
-        case FAILED:
-        case ERROR:
-          if (desiredState == VertexState.SUCCEEDED) {
-            vertex.succeededTaskCount = vertex.numTasks;
-            vertex.completedTaskCount = vertex.numTasks;
-          } else if (desiredState == VertexState.KILLED) {
-            vertex.killedTaskCount = vertex.numTasks;
-          } else if (desiredState == VertexState.FAILED || desiredState == VertexState.ERROR) {
-            vertex.failedTaskCount = vertex.numTasks;
-          }
-          if (vertex.tasks != null) {
-            TaskState taskState = TaskState.KILLED;
-            if (desiredState == VertexState.SUCCEEDED) {
-              taskState = TaskState.SUCCEEDED;
-            } else if (desiredState == VertexState.KILLED) {
-              taskState = TaskState.KILLED;
-            } else if (desiredState == VertexState.FAILED || desiredState == VertexState.ERROR) {
-              taskState = TaskState.FAILED;
-            }
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId(),
-                      taskState, false));
-            }
-          }
-          LOG.info("DAG informed Vertex of its final completed state"
-              + ", vertex=" + vertex.logIdentifier
-              + ", state=" + desiredState);
-          return desiredState;
-        default:
-          LOG.info("Unhandled desired state provided by DAG"
-              + ", vertex=" + vertex.logIdentifier
-              + ", state=" + desiredState);
-          vertex.finished(VertexState.ERROR);
-      }
-
-      // recover from recover log, should recover to running
-      // desiredState must be RUNNING based on above code
-      VertexState endState;
-      switch (vertex.recoveredState) {
-        case NEW:
-          // Trigger init and start as desired state is RUNNING
-          // Drop all root events
-          Iterator<TezEvent> iterator = vertex.recoveredEvents.iterator();
-          while (iterator.hasNext()) {
-            if (iterator.next().getEventType().equals(
-                EventType.ROOT_INPUT_DATA_INFORMATION_EVENT)) {
-              iterator.remove();
-            }
-          }
-          vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-              VertexEventType.V_INIT));
-          vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-              VertexEventType.V_START));
-          endState = VertexState.NEW;
-          break;
-        case INITED:
-          try {
-            vertex.initializeCommitters();
-          } catch (Exception e) {
-            String msg = "Failed to initialize committers"
-                + ", vertex=" + vertex.logIdentifier + ","
-                + ExceptionUtils.getStackTrace(e);
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-
-          // Recover tasks
-          if (vertex.tasks != null) {
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId()));
-            }
-          }
-          // Update tasks with their input payloads as needed
-
-          vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-              VertexEventType.V_START));
-          if (vertex.getInputVertices().isEmpty()) {
-            endState = VertexState.INITED;
-          } else {
-            endState = VertexState.RECOVERING;
-          }
-          break;
-        case RUNNING:
-          try {
-            vertex.initializeCommitters();
-          } catch (Exception e) {
-            String msg = "Failed to initialize committers"
-                + ", vertex=" + vertex.logIdentifier + ","
-                + ExceptionUtils.getStackTrace(e);
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-
-          // if commit in progress and desired state is not a succeeded one,
-          // move to failed
-          if (vertex.recoveryCommitInProgress) {
-            String msg = "Recovered vertex was in the middle of a commit"
-                + ", failing Vertex=" + vertex.logIdentifier;
-            LOG.warn(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.COMMIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-          assert vertex.tasks.size() == vertex.numTasks;
-          if (vertex.tasks != null && vertex.numTasks != 0) {
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId()));
-            }
-            try {
-              vertex.recoveryCodeSimulatingStart();
-              vertex.unsetTasksNotYetScheduled();
-              endState = VertexState.RUNNING;
-            } catch (AMUserCodeException e) {
-              String msg = "Exception in " + e.getSource() + ", vertex:" + vertex.getLogIdentifier();
-              LOG.error(msg, e);
-              vertex.finished(VertexState.FAILED, VertexTerminationCause.AM_USERCODE_FAILURE,
-                  msg + ", " + ExceptionUtils.getStackTrace(e.getCause()));
-              endState = VertexState.FAILED;
-            }
-          } else {
-            // why succeeded here
-            endState = VertexState.SUCCEEDED;
-            vertex.finished(endState);
-          }
-          break;
-        case SUCCEEDED:
-        case FAILED:
-        case KILLED:
-          if (vertex.recoveredState == VertexState.SUCCEEDED
-              && vertex.hasCommitter
-              && vertex.summaryCompleteSeen && !vertex.vertexCompleteSeen) {
-            String msg = "Cannot recover vertex as all recovery events not"
-                + " found, vertex=" + vertex.logIdentifier
-                + ", hasCommitters=" + vertex.hasCommitter
-                + ", summaryCompletionSeen=" + vertex.summaryCompleteSeen
-                + ", finalCompletionSeen=" + vertex.vertexCompleteSeen;
-            LOG.warn(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.COMMIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-          } else {
-            // recover tasks
-            if (vertex.tasks != null && vertex.numTasks != 0) {
-              TaskState taskState = TaskState.KILLED;
-              if (vertex.recoveredState == VertexState.SUCCEEDED) {
-                taskState = TaskState.SUCCEEDED;
-              } else if (vertex.recoveredState == VertexState.KILLED) {
-                taskState = TaskState.KILLED;
-              } else if (vertex.recoveredState == VertexState.FAILED) {
-                taskState = TaskState.FAILED;
-              }
-              for (Task task : vertex.tasks.values()) {
-                vertex.eventHandler.handle(
-                    new TaskEventRecoverTask(task.getTaskId(),
-                        taskState));
-              }
-              try {
-                vertex.recoveryCodeSimulatingStart();
-                vertex.unsetTasksNotYetScheduled();
-                endState = VertexState.RUNNING;
-              } catch (AMUserCodeException e) {
-                String msg = "Exception in " + e.getSource() +", vertex:" + vertex.getLogIdentifier();
-                LOG.error(msg, e);
-                vertex.finished(VertexState.FAILED, VertexTerminationCause.AM_USERCODE_FAILURE,
-                    msg + "," + ExceptionUtils.getStackTrace(e.getCause()));
-                endState = VertexState.FAILED;
-              }
-            } else {
-              endState = vertex.recoveredState;
-              vertex.finished(endState);
-            }
-          }
-          break;
-        default:
-          LOG.warn("Invalid recoveredState found when trying to recover"
-              + " vertex"
-              + ", vertex=" + vertex.logIdentifier
-              + ", recoveredState=" + vertex.recoveredState);
-          vertex.finished(VertexState.ERROR);
-          endState = VertexState.ERROR;
-          break;
-      }
-      if (!endState.equals(VertexState.RECOVERING)) {
-        LOG.info("Recovered Vertex State"
-            + ", vertexId=" + vertex.logIdentifier
-            + ", state=" + endState
-            + ", numInitedSourceVertices=" + vertex.numInitedSourceVertices
-            + ", numStartedSourceVertices=" + vertex.numStartedSourceVertices
-            + ", numRecoveredSourceVertices=" + vertex.numRecoveredSourceVertices
-            + ", recoveredEvents="
-            + ( vertex.recoveredEvents == null ? "null" : vertex.recoveredEvents.size())
-            + ", tasksIsNull=" + (vertex.tasks == null)
-            + ", numTasks=" + ( vertex.tasks == null ? "null" : vertex.tasks.size()));
-        for (Entry<Vertex, Edge> entry : vertex.getOutputVertices().entrySet()) {
-          vertex.eventHandler.handle(new VertexEventSourceVertexRecovered(
-              entry.getKey().getVertexId(),
-              vertex.vertexId, endState, null,
-              vertex.getDistanceFromRoot()));
-        }
-      }
-      if (EnumSet.of(VertexState.RUNNING, VertexState.SUCCEEDED, VertexState.INITED)
-          .contains(endState)) {
-        // Send events downstream
-        vertex.routeRecoveredEvents(endState, vertex.recoveredEvents);
-        vertex.recoveredEvents.clear();
-      } else {
-        // Ensure no recovered events
-        if (!vertex.recoveredEvents.isEmpty()) {
-          throw new RuntimeException("Invalid Vertex state"
-              + ", found non-zero recovered events in invalid state"
-              + ", vertex=" + vertex.logIdentifier
-              + ", recoveredState=" + endState
-              + ", recoveredEvents=" + vertex.recoveredEvents.size());
-        }
-      }
-      return endState;
-    }
-
-  }
   
   private void recoveryCodeSimulatingStart() throws AMUserCodeException {
     vertexManager.onVertexStarted(pendingReportedSrcCompletions);
@@ -2814,318 +2553,110 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     }
   }
 
-  public static class BufferDataRecoverTransition implements
-      SingleArcTransition<VertexImpl, VertexEvent> {
-
-    @Override
-    public void transition(VertexImpl vertex, VertexEvent vertexEvent) {
-      LOG.info("Received upstream event while still recovering"
-          + ", vertexId=" + vertex.logIdentifier
-          + ", vertexEventType=" + vertexEvent.getType());
-      if (vertexEvent.getType().equals(VertexEventType.V_ROUTE_EVENT)) {
-        VertexEventRouteEvent evt = (VertexEventRouteEvent) vertexEvent;
-        vertex.pendingRouteEvents.addAll(evt.getEvents());
-      } else if (vertexEvent.getType().equals(
-          VertexEventType.V_SOURCE_TASK_ATTEMPT_COMPLETED)) {
-        VertexEventSourceTaskAttemptCompleted evt =
-            (VertexEventSourceTaskAttemptCompleted) vertexEvent;
-        vertex.pendingReportedSrcCompletions.add(
-            evt.getCompletionEvent().getTaskAttemptId());
-      } else if (vertexEvent.getType().equals(
-          VertexEventType.V_SOURCE_VERTEX_STARTED)) {
-        VertexEventSourceVertexStarted startEvent =
-            (VertexEventSourceVertexStarted) vertexEvent;
-        int distanceFromRoot = startEvent.getSourceDistanceFromRoot() + 1;
-        if(vertex.distanceFromRoot < distanceFromRoot) {
-          vertex.distanceFromRoot = distanceFromRoot;
-        }
-        ++vertex.numStartedSourceVertices;
-      } else if (vertexEvent.getType().equals(VertexEventType.V_INIT)) {
-        ++vertex.numInitedSourceVertices;
-      }
-    }
-  }
-
-
   public static class RecoverTransition implements
       MultipleArcTransition<VertexImpl, VertexEvent, VertexState> {
 
     @Override
     public VertexState transition(VertexImpl vertex, VertexEvent vertexEvent) {
-      VertexEventSourceVertexRecovered sourceRecoveredEvent =
-          (VertexEventSourceVertexRecovered) vertexEvent;
-      // Use distance from root from Recovery events as upstream vertices may not
-      // send source vertex started event that is used to compute distance
-      int distanceFromRoot = sourceRecoveredEvent.getSourceDistanceFromRoot() + 1;
-      if(vertex.distanceFromRoot < distanceFromRoot) {
-        vertex.distanceFromRoot = distanceFromRoot;
-      }
+      VertexState endState = null;
 
-      ++vertex.numRecoveredSourceVertices;
-
-      switch (sourceRecoveredEvent.getSourceVertexState()) {
+      switch (vertex.recoveredState) {
         case NEW:
-          // Nothing to do
+          endState = VertexState.NEW;
+          if (vertex.getInputVerticesCount() == 0) {
+            // root vertex
+            vertex.getEventHandler().handle(new VertexEventInitVertex(vertex.getVertexId()));
+            vertex.getEventHandler().handle(new VertexEventStartVertex(vertex.getVertexId()));
+          } else {
+            // non-root vertex
+            for (Vertex parentVertex : vertex.getInputVertices().keySet()) {
+              if (parentVertex.getState() != VertexState.NEW) {
+                vertex.numInitedSourceVertices ++;
+              }
+            }
+            if (vertex.numInitedSourceVertices == vertex.getInputVerticesCount()) {
+              vertex.getEventHandler().handle(new VertexEventInitVertex(vertex.getVertexId()));
+            }
+          }
+
           break;
+
         case INITED:
-          ++vertex.numInitedSourceVertices;
+          endState = VertexState.INITED;
+          if (vertex.getInputVerticesCount() == 0) {
+            // root vertex
+            vertex.getEventHandler().handle(new VertexEventStartVertex(vertex.getVertexId()));
+          } else {
+            // non-root vertex
+            LOG.info("vertex.numStartedSourceVertices:" + vertex.numStartedSourceVertices);
+            for (Vertex parentVertex : vertex.getInputVertices().keySet()) {
+              if (parentVertex.getState() != VertexState.NEW
+                  && parentVertex.getState() != VertexState.INITED) {
+                vertex.numStartedSourceVertices ++;
+              }
+            }
+            if (vertex.numStartedSourceVertices == vertex.getInputVerticesCount()) {
+              vertex.getEventHandler().handle(new VertexEventStartVertex(vertex.getVertexId()));
+            }
+          }
+
           break;
+
         case RUNNING:
+          // wait for status update from its tasks
+          VertexState vertexState = new StartTransition().transition(vertex, new VertexEventStartVertex(vertex.vertexId,
+              vertex.recoveredVertexStartedEvent));
+          Preconditions.checkArgument(vertexState == VertexState.RUNNING, "Vertex can not recovered to RUNNING,"
+            + " vertexId=" + vertex.logIdentifier);
+          for (Task task : vertex.tasks.values()) {
+            if (((TaskImpl)task).isInRecovery) {
+              ((TaskImpl)task).handle(new TaskEventRecoverTask(task.getTaskId(), null));
+            }
+          }
+          endState = VertexState.RUNNING;
+          break;
+
         case SUCCEEDED:
-          ++vertex.numInitedSourceVertices;
-          ++vertex.numStartedSourceVertices;
-          if (sourceRecoveredEvent.getCompletedTaskAttempts() != null) {
-            vertex.pendingReportedSrcCompletions.addAll(
-                sourceRecoveredEvent.getCompletedTaskAttempts());
+          if (vertex.tasks.isEmpty()) {
+            // zero task
+            endState = VertexState.SUCCEEDED;
+          } else {
+            // non-zero tasks
+            for (Task task : vertex.tasks.values()) {
+              ((TaskImpl)task).handle(new TaskEventRecoverTask(task.getTaskId(), null));
+            }
+            endState = VertexState.RUNNING;
           }
           break;
+
         case FAILED:
         case KILLED:
         case ERROR:
-          // Nothing to do
-          // Recover as if source vertices have not inited/started
+          // kill/failed/error before it is started
+          if (!vertex.recoveredVertexData.recoveredStartedEventSeen) {
+            vertex.finished(vertex.recoveredState);
+          } else {
+            // wait for status update from its tasks
+            vertexState = new StartTransition().transition(vertex, new VertexEventStartVertex(vertex.vertexId,
+                vertex.recoveredVertexStartedEvent));
+            Preconditions.checkArgument(vertexState == VertexState.RUNNING, "Vertex can not recovered to RUNNING,"
+              + " vertexId=" + vertex.logIdentifier);
+            for (Task task : vertex.tasks.values()) {
+              ((TaskImpl)task).handle(new TaskEventRecoverTask(task.getTaskId(), null));
+            }
+          }
+          endState = VertexState.TERMINATING;
           break;
         default:
-          LOG.warn("Received invalid SourceVertexRecovered event"
-              + ", vertex=" + vertex.logIdentifier
-              + ", sourceVertex=" + sourceRecoveredEvent.getSourceVertexID()
-              + ", sourceVertexState=" + sourceRecoveredEvent.getSourceVertexState());
-          return vertex.finished(VertexState.ERROR);
+          throw new TezUncheckedException("Invalid recoveredState, recoveredState="
+              + vertex.recoveredState
+              + ", vertexId=" + vertex.logIdentifier);
       }
-
-      if (vertex.numRecoveredSourceVertices !=
-          vertex.getInputVerticesCount()) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Waiting for source vertices to recover"
-              + ", vertex=" + vertex.logIdentifier
-              + ", numRecoveredSourceVertices=" + vertex.numRecoveredSourceVertices
-              + ", totalSourceVertices=" + vertex.getInputVerticesCount());
-        }
-        return VertexState.RECOVERING;
-      }
-
-
-      // Complete recovery
-      VertexState endState = VertexState.NEW;
-      List<TezTaskAttemptID> completedTaskAttempts = Lists.newLinkedList();
-      switch (vertex.recoveredState) {
-        case NEW:
-          // Drop all root events if not inited properly
-          Iterator<TezEvent> iterator = vertex.recoveredEvents.iterator();
-          while (iterator.hasNext()) {
-            if (iterator.next().getEventType().equals(
-                EventType.ROOT_INPUT_DATA_INFORMATION_EVENT)) {
-              iterator.remove();
-            }
-          }
-          // Trigger init if all sources initialized
-          if (vertex.numInitedSourceVertices == vertex.getInputVerticesCount()) {
-            vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-                VertexEventType.V_INIT));
-          }
-          if (vertex.numStartedSourceVertices == vertex.getInputVerticesCount()) {
-            vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-                VertexEventType.V_START));
-          }
-          endState = VertexState.NEW;
-          break;
-        case INITED:
-          vertex.vertexAlreadyInitialized = true;
-          try {
-            vertex.initializeCommitters();
-          } catch (Exception e) {
-            String msg = "Failed to initialize committers, vertex="
-                + vertex.logIdentifier + "," + ExceptionUtils.getStackTrace(e);
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-          boolean successSetParallelism ;
-          try {
-            // recovering only edge manager
-            vertex.setParallelism(0,
-              null, vertex.recoveredSourceEdgeProperties, vertex.recoveredRootInputSpecUpdates, true, false);
-            successSetParallelism = true;
-          } catch (Exception e) {
-            successSetParallelism = false;
-          }
-          if (!successSetParallelism) {
-            String msg  = "Failed to recover edge managers, vertex=" + vertex.logIdentifier;
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-          // Recover tasks
-          if (vertex.tasks != null) {
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId()));
-            }
-          }
-          if (vertex.numInitedSourceVertices != vertex.getInputVerticesCount()) {
-            LOG.info("Vertex already initialized but source vertices have not"
-                + " initialized"
-                + ", vertexId=" + vertex.logIdentifier
-                + ", numInitedSourceVertices=" + vertex.numInitedSourceVertices);
-          } else {
-            if (vertex.numStartedSourceVertices == vertex.getInputVerticesCount()) {
-              vertex.eventHandler.handle(new VertexEvent(vertex.vertexId,
-                VertexEventType.V_START));
-            }
-          }
-          endState = VertexState.INITED;
-          break;
-        case RUNNING:
-          // if commit in progress and desired state is not a succeeded one,
-          // move to failed
-          if (vertex.recoveryCommitInProgress) {
-            LOG.info("Recovered vertex was in the middle of a commit"
-                + ", failing Vertex=" + vertex.logIdentifier);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.COMMIT_FAILURE, null);
-            endState = VertexState.FAILED;
-            break;
-          }
-          try {
-            vertex.initializeCommitters();
-          } catch (Exception e) {
-            String msg = "Failed to initialize committers, vertex="
-                + vertex.logIdentifier + "," + ExceptionUtils.getStackTrace(e);
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-          try {
-            vertex.setParallelism(vertex.numTasks, null, vertex.recoveredSourceEdgeProperties,
-              vertex.recoveredRootInputSpecUpdates, true, false);
-            successSetParallelism = true;
-          } catch (Exception e) {
-            successSetParallelism = false;
-          }
-          if (!successSetParallelism) {
-            String msg = "Failed to recover edge managers for vertex:" + vertex.logIdentifier;
-            LOG.error(msg);
-            vertex.finished(VertexState.FAILED,
-                VertexTerminationCause.INIT_FAILURE, msg);
-            endState = VertexState.FAILED;
-            break;
-          }
-          assert vertex.tasks.size() == vertex.numTasks;
-          if (vertex.tasks != null && vertex.numTasks != 0) {
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId()));
-            }
-            try {
-              vertex.recoveryCodeSimulatingStart();
-              vertex.unsetTasksNotYetScheduled();
-              endState = VertexState.RUNNING;
-            } catch (AMUserCodeException e) {
-              String msg = "Exception in " + e.getSource() + ", vertex=" + vertex.getLogIdentifier();
-              LOG.error(msg, e);
-              vertex.finished(VertexState.FAILED, VertexTerminationCause.AM_USERCODE_FAILURE,
-                  msg + "," + ExceptionUtils.getStackTrace(e.getCause()));
-              endState = VertexState.FAILED;
-            }
-          } else {
-            endState = VertexState.SUCCEEDED;
-            vertex.finished(endState);
-          }
-          break;
-        case SUCCEEDED:
-        case FAILED:
-        case KILLED:
-          // recover tasks
-          assert vertex.tasks.size() == vertex.numTasks;
-          if (vertex.tasks != null  && vertex.numTasks != 0) {
-            TaskState taskState = TaskState.KILLED;
-            if (vertex.recoveredState == VertexState.SUCCEEDED) {
-              taskState = TaskState.SUCCEEDED;
-            } else if (vertex.recoveredState == VertexState.KILLED) {
-              taskState = TaskState.KILLED;
-            } else if (vertex.recoveredState == VertexState.FAILED) {
-              taskState = TaskState.FAILED;
-            }
-            for (Task task : vertex.tasks.values()) {
-              vertex.eventHandler.handle(
-                  new TaskEventRecoverTask(task.getTaskId(),
-                      taskState));
-            }
-            // Wait for all tasks to recover and report back
-            try {
-              vertex.recoveryCodeSimulatingStart();
-              vertex.unsetTasksNotYetScheduled();
-              endState = VertexState.RUNNING;
-            } catch (AMUserCodeException e) {
-              String msg = "Exception in " + e.getSource() + ", vertex:" + vertex.getLogIdentifier();
-              LOG.error(msg, e);
-              vertex.finished(VertexState.FAILED, VertexTerminationCause.AM_USERCODE_FAILURE,
-                  msg + "," + ExceptionUtils.getStackTrace(e.getCause()));
-              endState = VertexState.FAILED;
-            }
-          } else {
-            endState = vertex.recoveredState;
-            vertex.finished(endState);
-          }
-          break;
-        default:
-          LOG.warn("Invalid recoveredState found when trying to recover"
-              + " vertex, recoveredState=" + vertex.recoveredState);
-          vertex.finished(VertexState.ERROR);
-          endState = VertexState.ERROR;
-          break;
-      }
-
-      LOG.info("Recovered Vertex State"
-          + ", vertexId=" + vertex.logIdentifier
-          + ", state=" + endState
-          + ", numInitedSourceVertices" + vertex.numInitedSourceVertices
-          + ", numStartedSourceVertices=" + vertex.numStartedSourceVertices
-          + ", numRecoveredSourceVertices=" + vertex.numRecoveredSourceVertices
-          + ", tasksIsNull=" + (vertex.tasks == null)
-          + ", numTasks=" + ( vertex.tasks == null ? 0 : vertex.tasks.size()));
-
-      for (Entry<Vertex, Edge> entry : vertex.getOutputVertices().entrySet()) {
-        vertex.eventHandler.handle(new VertexEventSourceVertexRecovered(
-            entry.getKey().getVertexId(),
-            vertex.vertexId, endState, completedTaskAttempts,
-            vertex.getDistanceFromRoot()));
-      }
-      if (EnumSet.of(VertexState.RUNNING, VertexState.SUCCEEDED, VertexState.INITED)
-          .contains(endState)) {
-        // Send events downstream
-        vertex.routeRecoveredEvents(endState, vertex.recoveredEvents);
-        vertex.recoveredEvents.clear();
-        if (!vertex.pendingRouteEvents.isEmpty()) {
-          try {
-            vertex.handleRoutedTezEvents(vertex.pendingRouteEvents, false, true);
-            vertex.pendingRouteEvents.clear();
-          } catch (AMUserCodeException e) {
-            String msg = "Exception in " + e.getSource() + ", vertex=" + vertex.getLogIdentifier();
-            LOG.error(msg, e);
-            vertex.finished(VertexState.FAILED, VertexTerminationCause.AM_USERCODE_FAILURE,
-                msg + ", " + e.getMessage() + ", " + ExceptionUtils.getStackTrace(e.getCause()));
-            endState = VertexState.FAILED;
-          }
-        }
-      } else {
-        // Ensure no recovered events
-        if (!vertex.recoveredEvents.isEmpty()) {
-          throw new RuntimeException("Invalid Vertex state"
-              + ", found non-zero recovered events in invalid state"
-              + ", recoveredState=" + endState
-              + ", recoveredEvents=" + vertex.recoveredEvents.size());
-        }
-      }
+      
+      LOG.info("Vertex is recovered to state:" + endState +
+          ", vertexId=" + vertex.logIdentifier);
       return endState;
     }
-
   }
 
   public static class IgnoreInitInInitedTransition implements
@@ -3136,13 +2667,15 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
       LOG.info("Received event during INITED state"
           + ", vertex=" + vertex.logIdentifier
           + ", eventType=" + event.getType());
-      if (!vertex.vertexAlreadyInitialized) {
-        LOG.error("Vertex not initialized but in INITED state"
-            + ", vertexId=" + vertex.logIdentifier);
-        return vertex.finished(VertexState.ERROR);
-      } else {
+      // possible to happen in recovery, delayInit
+      // TestDAGRecovery.testDelayedInit
+//      if (!vertex.vertexAlreadyInitialized) {
+//        LOG.error("Vertex not initialized but in INITED state"
+//            + ", vertexId=" + vertex.logIdentifier);
+//        return vertex.finished(VertexState.ERROR);
+//      } else {
         return VertexState.INITED;
-      }
+//      }
     }
   }
 
@@ -3154,6 +2687,13 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     @Override
     public VertexState transition(VertexImpl vertex, VertexEvent event) {
       VertexState vertexState = VertexState.NEW;
+      VertexEventInitVertex initVertexEvent = (VertexEventInitVertex)event;
+      // recovery init
+      if (initVertexEvent.getRecoveredVertexInitedEvent() != null) {
+        vertexState = handleInitEvent(vertex, initVertexEvent.getRecoveredVertexInitedEvent());
+        return vertexState;
+      }
+      // non-recovery init
       vertex.numInitedSourceVertices++;
       // TODO fix this as part of TEZ-1008
       // Should have a different way to infer source vertices INITED
@@ -3167,12 +2707,13 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
       if (vertex.sourceVertices == null || vertex.sourceVertices.isEmpty() ||
           (vertex.numInitedSourceVertices == vertex.sourceVertices.size()
             || vertex.numInitedSourceVertices == (vertex.sourceVertices.size()+1))) {
-        vertexState = handleInitEvent(vertex, event);
+        vertexState = handleInitEvent(vertex, null);
         if (vertexState != VertexState.FAILED) {
           if (vertex.targetVertices != null && !vertex.targetVertices.isEmpty()) {
             for (Vertex target : vertex.targetVertices.keySet()) {
-              vertex.getEventHandler().handle(new VertexEvent(target.getVertexId(),
-                VertexEventType.V_INIT));
+              if (target.getState() == VertexState.NEW) {
+                vertex.getEventHandler().handle(new VertexEventInitVertex(target.getVertexId()));
+              }
             }
           }
         }
@@ -3180,8 +2721,11 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
       return vertexState;
     }
 
-    private VertexState handleInitEvent(VertexImpl vertex, VertexEvent event) {
-      VertexState state = vertex.setupVertex();
+    private VertexState handleInitEvent(VertexImpl vertex, VertexInitializedEvent vertexInitedEvent) {
+      VertexState state = vertex.setupVertex(vertexInitedEvent);
+      if (vertexInitedEvent != null) {
+        vertex.numTasks = vertexInitedEvent.getNumTasks();
+      }
       if (state.equals(VertexState.FAILED)) {
         return state;
       }
@@ -3246,12 +2790,12 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
         LOG.info("Creating " + vertex.numTasks + " tasks for vertex: " + vertex.logIdentifier);
         vertex.createTasks();
         // this block may return VertexState.INITIALIZING
-        if (vertex.inputsWithInitializers != null) {
+        if (vertex.inputsWithInitializers != null && vertexInitedEvent == null) {
           LOG.info("Vertex will initialize from input initializer. " + vertex.logIdentifier);
           vertex.setupInputInitializerManager();
           return VertexState.INITIALIZING;
         }
-        if (!vertex.uninitializedEdges.isEmpty()) {
+        if (!vertex.uninitializedEdges.isEmpty() && vertexInitedEvent == null) {
           LOG.info("Vertex has uninitialized edges. " + vertex.logIdentifier);
           return VertexState.INITIALIZING;
         }
@@ -3292,8 +2836,7 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
       // a start event.
       LOG.info("Triggering start event for vertex: " + logIdentifier +
           " with distanceFromRoot: " + distanceFromRoot );
-      eventHandler.handle(new VertexEvent(vertexId,
-          VertexEventType.V_START));
+      eventHandler.handle(new VertexEventStartVertex(vertexId));
     }
   }
 
@@ -3471,12 +3014,11 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
   public static class StartTransition implements
     MultipleArcTransition<VertexImpl, VertexEvent, VertexState> {
 
-  @Override
-  public VertexState transition(VertexImpl vertex, VertexEvent event) {
-      Preconditions.checkState(vertex.getState() == VertexState.INITED,
-          "Unexpected state " + vertex.getState() + " for " + vertex.logIdentifier);
+    @Override
+    public VertexState transition(VertexImpl vertex, VertexEvent event) {
+      VertexEventStartVertex startEvent = (VertexEventStartVertex)event;
       vertex.startTimeRequested = vertex.clock.getTime();
-      return vertex.startVertex();
+      return vertex.startVertex(startEvent.getRecoveredVertexStartedEvent());
     }
   }
   
@@ -3493,13 +3035,15 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     }    
   }
 
-  private VertexState startVertex() {
+  private VertexState startVertex(VertexStartedEvent recoveredStartEvent) {
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     // IMPORTANT - Until Recovery is fixed to use normal state transitions, if any code is added 
     // here then please check if it needs to be duplicated in recoveryCodeSimulatingStart().
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    Preconditions.checkState(getState() == VertexState.INITED,
-        "Vertex must be inited " + logIdentifier);
+    if (!isInRecovery) {
+      Preconditions.checkState(getState() == VertexState.INITED,
+          "Vertex must be inited " + logIdentifier);
+    }
 
     startedTime = clock.getTime();
     try {
@@ -3530,7 +3074,7 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
     // starting to downstream vertices. If the connections/structure of this
     // vertex is not fully defined yet then we could send this event later
     // when we are ready
-    if (targetVertices != null) {
+    if (targetVertices != null && recoveredStartEvent == null) {
       for (Vertex targetVertex : targetVertices.keySet()) {
         eventHandler.handle(new VertexEventSourceVertexStarted(targetVertex
             .getVertexId(), getVertexId(), distanceFromRoot));
@@ -3764,7 +3308,9 @@ public class VertexImpl implements org.apache.tez.dag.app.dag.Vertex, EventHandl
       if (TaskAttemptStateInternal.SUCCEEDED.equals(completionEvent
           .getTaskAttemptState())) {
         vertex.numSuccessSourceAttemptCompletions++;
-
+        LOG.info(vertex.getLogIdentifier() + ":" + vertex.getState()
+            + ",numInitedSourceVertices=" + vertex.numInitedSourceVertices
+            + ",numStartedSourceVertices=" + vertex.numStartedSourceVertices);
         if (vertex.getState() == VertexState.RUNNING) {
           try {
             // Inform the vertex manager about the source task completing.
