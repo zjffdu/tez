@@ -34,10 +34,13 @@ import org.apache.tez.dag.api.oldrecords.TaskAttemptState;
 import org.apache.tez.dag.app.dag.impl.TaskAttemptImpl.DataEventDependencyInfo;
 import org.apache.tez.dag.history.HistoryEvent;
 import org.apache.tez.dag.history.HistoryEventType;
+import org.apache.tez.dag.history.utils.TezEventUtils;
 import org.apache.tez.dag.records.TaskAttemptTerminationCause;
 import org.apache.tez.dag.records.TezTaskAttemptID;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.DataEventDependencyInfoProto;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.TaskAttemptFinishedProto;
+import org.apache.tez.dag.recovery.records.RecoveryProtos.TezEventProto;
+import org.apache.tez.runtime.api.impl.TezEvent;
 
 public class TaskAttemptFinishedEvent implements HistoryEvent {
 
@@ -55,6 +58,7 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
   private TezCounters tezCounters;
   private TaskAttemptTerminationCause error;
   private List<DataEventDependencyInfo> dataEvents;
+  private List<TezEvent> taGeneratedEvents;
   
   public TaskAttemptFinishedEvent(TezTaskAttemptID taId,
       String vertexName,
@@ -63,7 +67,8 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
       TaskAttemptState state,
       TaskAttemptTerminationCause error,
       String diagnostics, TezCounters counters, 
-      List<DataEventDependencyInfo> dataEvents, 
+      List<DataEventDependencyInfo> dataEvents,
+      List<TezEvent> taGeneratedEvents,
       long creationTime, 
       TezTaskAttemptID creationCausalTA, 
       long allocationTime) {
@@ -79,6 +84,7 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
     this.tezCounters = counters;
     this.error = error;
     this.dataEvents = dataEvents;
+    this.taGeneratedEvents = taGeneratedEvents;
   }
 
   public TaskAttemptFinishedEvent() {
@@ -103,7 +109,7 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
     return dataEvents;
   }
   
-  public TaskAttemptFinishedProto toProto() {
+  public TaskAttemptFinishedProto toProto() throws IOException {
     TaskAttemptFinishedProto.Builder builder =
         TaskAttemptFinishedProto.newBuilder();
     builder.setTaskAttemptId(taskAttemptId.toString())
@@ -129,10 +135,17 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
         builder.addDataEvents(DataEventDependencyInfo.toProto(info));
       }
     }
+    if (taGeneratedEvents != null && !taGeneratedEvents.isEmpty()) {
+      List<TezEventProto>  tezEventProtos = Lists.newArrayListWithCapacity(taGeneratedEvents.size());
+      for (TezEvent event : taGeneratedEvents) {
+        tezEventProtos.add(TezEventUtils.toProto(event));
+      }
+      builder.addAllTaGeneratedEvents(tezEventProtos);
+    }
     return builder.build();
   }
 
-  public void fromProto(TaskAttemptFinishedProto proto) {
+  public void fromProto(TaskAttemptFinishedProto proto) throws IOException {
     this.taskAttemptId = TezTaskAttemptID.fromString(proto.getTaskAttemptId());
     this.state = TaskAttemptState.values()[proto.getState()];
     this.creationTime = proto.getCreationTime();
@@ -157,6 +170,13 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
       for (DataEventDependencyInfoProto protoEvent : proto.getDataEventsList()) {
         this.dataEvents.add(DataEventDependencyInfo.fromProto(protoEvent));
       }
+    }
+    int eventCount = proto.getTaGeneratedEventsCount();
+    if (eventCount > 0) {
+      this.taGeneratedEvents = Lists.newArrayListWithCapacity(eventCount);
+    }
+    for (TezEventProto eventProto : proto.getTaGeneratedEventsList()) {
+      this.taGeneratedEvents.add(TezEventUtils.fromProto(eventProto));
     }
   }
 
@@ -236,4 +256,7 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
     return creationCausalTA;
   }
 
+  public List<TezEvent> getTAGeneratedEvents() {
+    return taGeneratedEvents;
+  }
 }

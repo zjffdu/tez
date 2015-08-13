@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.tez.dag.history.events;
 
 import java.io.IOException;
@@ -33,40 +32,42 @@ import org.apache.tez.dag.history.HistoryEventType;
 import org.apache.tez.dag.records.TezVertexID;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.EdgeManagerDescriptorProto;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.RootInputSpecUpdateProto;
-import org.apache.tez.dag.recovery.records.RecoveryProtos.VertexParallelismUpdatedProto;
+import org.apache.tez.dag.recovery.records.RecoveryProtos.VertexReconfigureDoneProto;
 import org.apache.tez.runtime.api.InputSpecUpdate;
 
 import com.google.common.collect.Maps;
 
-public class VertexParallelismUpdatedEvent implements HistoryEvent {
+public class VertexReconfigureDoneEvent implements HistoryEvent {
 
   private TezVertexID vertexID;
+  private long reconfigureDoneTime;
   private int numTasks;
-  private int oldNumTasks;
   private VertexLocationHint vertexLocationHint;
   private Map<String, EdgeProperty> sourceEdgeProperties;
   private Map<String, InputSpecUpdate> rootInputSpecUpdates;
-  private long updateTime;
+  private boolean reconfigureByVM;
 
-  public VertexParallelismUpdatedEvent() {
+  public VertexReconfigureDoneEvent() {  
   }
 
-  public VertexParallelismUpdatedEvent(TezVertexID vertexID,
-      int numTasks, VertexLocationHint vertexLocationHint,
+  public VertexReconfigureDoneEvent(TezVertexID vertexID,
+      long reconfigureDoneTime, int numTasks,
+      VertexLocationHint vertexLocationHint,
       Map<String, EdgeProperty> sourceEdgeProperties,
-      Map<String, InputSpecUpdate> rootInputSpecUpdates, int oldNumTasks) {
+      Map<String, InputSpecUpdate> rootInputSpecUpdates,
+      boolean reconfigureByVM) {
+    super();
     this.vertexID = vertexID;
     this.numTasks = numTasks;
     this.vertexLocationHint = vertexLocationHint;
     this.sourceEdgeProperties = sourceEdgeProperties;
     this.rootInputSpecUpdates = rootInputSpecUpdates;
-    this.updateTime = System.currentTimeMillis();
-    this.oldNumTasks = oldNumTasks;
+    this.reconfigureByVM = reconfigureByVM;
   }
 
   @Override
   public HistoryEventType getEventType() {
-    return HistoryEventType.VERTEX_PARALLELISM_UPDATED;
+    return HistoryEventType.VERTEX_RECONFIGURE_DONE;
   }
 
   @Override
@@ -79,11 +80,14 @@ public class VertexParallelismUpdatedEvent implements HistoryEvent {
     return true;
   }
 
-  public VertexParallelismUpdatedProto toProto() {
-    VertexParallelismUpdatedProto.Builder builder =
-        VertexParallelismUpdatedProto.newBuilder();
+  public VertexReconfigureDoneProto toProto() {
+    VertexReconfigureDoneProto.Builder builder =
+        VertexReconfigureDoneProto.newBuilder();
     builder.setVertexId(vertexID.toString())
+        .setReconfigureDoneTime(reconfigureDoneTime)
+        .setReconfigureByVm(reconfigureByVM)
         .setNumTasks(numTasks);
+
     if (vertexLocationHint != null) {
       builder.setVertexLocationHint(DagTypeConverters.convertVertexLocationHintToProto(
             this.vertexLocationHint));
@@ -112,8 +116,10 @@ public class VertexParallelismUpdatedEvent implements HistoryEvent {
     return builder.build();
   }
 
-  public void fromProto(VertexParallelismUpdatedProto proto) {
+  public void fromProto(VertexReconfigureDoneProto proto) {
     this.vertexID = TezVertexID.fromString(proto.getVertexId());
+    this.reconfigureDoneTime = proto.getReconfigureDoneTime();
+    this.reconfigureByVM = proto.getReconfigureByVm();
     this.numTasks = proto.getNumTasks();
     if (proto.hasVertexLocationHint()) {
       this.vertexLocationHint = DagTypeConverters.convertVertexLocationHintFromProto(
@@ -154,7 +160,7 @@ public class VertexParallelismUpdatedEvent implements HistoryEvent {
 
   @Override
   public void fromProtoStream(InputStream inputStream) throws IOException {
-    VertexParallelismUpdatedProto proto = VertexParallelismUpdatedProto.parseDelimitedFrom(inputStream);
+    VertexReconfigureDoneProto proto = VertexReconfigureDoneProto.parseDelimitedFrom(inputStream);
     if (proto == null) {
       throw new IOException("No data found in stream");
     }
@@ -164,13 +170,15 @@ public class VertexParallelismUpdatedEvent implements HistoryEvent {
   @Override
   public String toString() {
     return "vertexId=" + vertexID
+        + ", reconfigureDoneTime=" + reconfigureDoneTime
         + ", numTasks=" + numTasks
         + ", vertexLocationHint=" +
         (vertexLocationHint == null? "null" : vertexLocationHint)
         + ", edgeManagersCount=" +
-        (sourceEdgeProperties == null? "null" : sourceEdgeProperties.size()
+        (sourceEdgeProperties == null? "null" : sourceEdgeProperties.size())
         + ", rootInputSpecUpdateCount="
-        + (rootInputSpecUpdates == null ? "null" : rootInputSpecUpdates.size()));
+        + (rootInputSpecUpdates == null ? "null" : rootInputSpecUpdates.size())
+        + ", reconfigureByVM=" + reconfigureByVM;
   }
 
   public TezVertexID getVertexID() {
@@ -188,17 +196,16 @@ public class VertexParallelismUpdatedEvent implements HistoryEvent {
   public Map<String, EdgeProperty> getSourceEdgeProperties() {
     return sourceEdgeProperties;
   }
-  
+
   public Map<String, InputSpecUpdate> getRootInputSpecUpdates() {
     return rootInputSpecUpdates;
   }
 
-  public long getUpdateTime() {
-    return updateTime;
+  public long getReconfigureDoneTime() {
+    return reconfigureDoneTime;
   }
 
-  public int getOldNumTasks() {
-    return oldNumTasks;
+  public boolean isReconfigureByVM() {
+    return reconfigureByVM;
   }
-
 }

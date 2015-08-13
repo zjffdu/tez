@@ -263,4 +263,12 @@ public abstract class TezExampleBase extends Configured implements Tool {
    */
   protected abstract int runJob(String[] args, TezConfiguration tezConf,
                                 TezClient tezClient) throws Exception;
+  
+  public ApplicationId getAppId() {
+    if (tezClientInternal == null) {
+      LOG.warn("TezClient is not initialized, return null for AppId");
+      return null;
+    }
+    return tezClientInternal.getAppMasterApplicationId();
+  }
 }

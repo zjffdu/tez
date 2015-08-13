@@ -762,8 +762,7 @@ public class TestTaskImpl {
         boolean isRescheduled,
         Resource resource, ContainerContext containerContext, TezTaskAttemptID schedCausalTA) {
       super(taskId, attemptNumber, eventHandler, tal, conf, clock, thh,
-          appContext, isRescheduled, resource, containerContext, false, mock(TaskImpl.class),
-          schedCausalTA);
+          appContext, isRescheduled, resource, containerContext, false, mock(TaskImpl.class), schedCausalTA);
     }
     
     @Override

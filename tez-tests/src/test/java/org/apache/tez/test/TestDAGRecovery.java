@@ -42,8 +42,8 @@ import org.apache.tez.dag.api.client.DAGStatus.State;
 import org.apache.tez.dag.app.RecoveryParser;
 import org.apache.tez.dag.history.HistoryEvent;
 import org.apache.tez.dag.history.HistoryEventType;
+import org.apache.tez.dag.history.events.VertexInitGeneratedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexRecoverableEventsGeneratedEvent;
 import org.apache.tez.test.dag.MultiAttemptDAG;
 import org.apache.tez.test.dag.MultiAttemptDAG.FailingInputInitializer;
 import org.apache.tez.test.dag.MultiAttemptDAG.NoOpInput;
@@ -192,8 +192,11 @@ public class TestDAGRecovery {
         Path currentAttemptRecoveryDataDir = TezCommonUtils.getAttemptRecoveryPath(recoveryDataDir,i);
         Path recoveryFilePath = new Path(currentAttemptRecoveryDataDir,
         appId.toString().replace("application", "dag") + "_1" + TezConstants.DAG_RECOVERY_RECOVER_FILE_SUFFIX);
-        historyEvents.addAll(RecoveryParser.parseDAGRecoveryFile(
-            fs.open(recoveryFilePath)));
+        // VM may have been replaced as NoOpVertexManager, so the next AM fail may not happen
+        if (fs.exists(recoveryFilePath)) {
+          historyEvents.addAll(RecoveryParser.parseDAGRecoveryFile(
+              fs.open(recoveryFilePath)));
+        }
       }
 
       int inputInfoEventIndex = -1;
@@ -203,11 +206,11 @@ public class TestDAGRecovery {
         LOG.info("Parsed event from recovery stream"
             + ", eventType=" + historyEvent.getEventType()
             + ", event=" + historyEvent);
-        if (historyEvent.getEventType() ==  HistoryEventType.VERTEX_DATA_MOVEMENT_EVENTS_GENERATED) {
-          VertexRecoverableEventsGeneratedEvent dmEvent =
-              (VertexRecoverableEventsGeneratedEvent) historyEvent;
+        if (historyEvent.getEventType() ==  HistoryEventType.VERTEX_INIT_GENERATED_EVENTS) {
+          VertexInitGeneratedEvent vertexInitGeneratedEvent =
+              (VertexInitGeneratedEvent) historyEvent;
           // TODO do not need to check whether it is -1 after Tez-1521 is resolved
-          if (dmEvent.getVertexID().getId() == 0 && inputInfoEventIndex == -1) {
+          if (vertexInitGeneratedEvent.getVertexID().getId() == 0 && inputInfoEventIndex == -1) {
             inputInfoEventIndex = j;
           }
         }
