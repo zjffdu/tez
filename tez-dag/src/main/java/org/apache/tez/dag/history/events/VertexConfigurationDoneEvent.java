@@ -32,12 +32,12 @@ import org.apache.tez.dag.history.HistoryEventType;
 import org.apache.tez.dag.records.TezVertexID;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.EdgeManagerDescriptorProto;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.RootInputSpecUpdateProto;
-import org.apache.tez.dag.recovery.records.RecoveryProtos.VertexReconfigureDoneProto;
+import org.apache.tez.dag.recovery.records.RecoveryProtos.VertexConfigurationDoneProto;
 import org.apache.tez.runtime.api.InputSpecUpdate;
 
 import com.google.common.collect.Maps;
 
-public class VertexReconfigureDoneEvent implements HistoryEvent {
+public class VertexConfigurationDoneEvent implements HistoryEvent {
 
   private TezVertexID vertexID;
   private long reconfigureDoneTime;
@@ -45,29 +45,29 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
   private VertexLocationHint vertexLocationHint;
   private Map<String, EdgeProperty> sourceEdgeProperties;
   private Map<String, InputSpecUpdate> rootInputSpecUpdates;
-  private boolean reconfigureByVM;
+  private boolean setParallelismCalledFlag;
 
-  public VertexReconfigureDoneEvent() {  
+  public VertexConfigurationDoneEvent() {  
   }
 
-  public VertexReconfigureDoneEvent(TezVertexID vertexID,
+  public VertexConfigurationDoneEvent(TezVertexID vertexID,
       long reconfigureDoneTime, int numTasks,
       VertexLocationHint vertexLocationHint,
       Map<String, EdgeProperty> sourceEdgeProperties,
       Map<String, InputSpecUpdate> rootInputSpecUpdates,
-      boolean reconfigureByVM) {
+      boolean setParallelismCalledFlag) {
     super();
     this.vertexID = vertexID;
     this.numTasks = numTasks;
     this.vertexLocationHint = vertexLocationHint;
     this.sourceEdgeProperties = sourceEdgeProperties;
     this.rootInputSpecUpdates = rootInputSpecUpdates;
-    this.reconfigureByVM = reconfigureByVM;
+    this.setParallelismCalledFlag = setParallelismCalledFlag;
   }
 
   @Override
   public HistoryEventType getEventType() {
-    return HistoryEventType.VERTEX_RECONFIGURE_DONE;
+    return HistoryEventType.VERTEX_CONFIGURE_DONE;
   }
 
   @Override
@@ -80,12 +80,12 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
     return true;
   }
 
-  public VertexReconfigureDoneProto toProto() {
-    VertexReconfigureDoneProto.Builder builder =
-        VertexReconfigureDoneProto.newBuilder();
+  public VertexConfigurationDoneProto toProto() {
+    VertexConfigurationDoneProto.Builder builder =
+        VertexConfigurationDoneProto.newBuilder();
     builder.setVertexId(vertexID.toString())
         .setReconfigureDoneTime(reconfigureDoneTime)
-        .setReconfigureByVm(reconfigureByVM)
+        .setSetParallelismCalledFlag(setParallelismCalledFlag)
         .setNumTasks(numTasks);
 
     if (vertexLocationHint != null) {
@@ -116,10 +116,10 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
     return builder.build();
   }
 
-  public void fromProto(VertexReconfigureDoneProto proto) {
+  public void fromProto(VertexConfigurationDoneProto proto) {
     this.vertexID = TezVertexID.fromString(proto.getVertexId());
     this.reconfigureDoneTime = proto.getReconfigureDoneTime();
-    this.reconfigureByVM = proto.getReconfigureByVm();
+    this.setParallelismCalledFlag = proto.getSetParallelismCalledFlag();
     this.numTasks = proto.getNumTasks();
     if (proto.hasVertexLocationHint()) {
       this.vertexLocationHint = DagTypeConverters.convertVertexLocationHintFromProto(
@@ -160,7 +160,7 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
 
   @Override
   public void fromProtoStream(InputStream inputStream) throws IOException {
-    VertexReconfigureDoneProto proto = VertexReconfigureDoneProto.parseDelimitedFrom(inputStream);
+    VertexConfigurationDoneProto proto = VertexConfigurationDoneProto.parseDelimitedFrom(inputStream);
     if (proto == null) {
       throw new IOException("No data found in stream");
     }
@@ -178,7 +178,7 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
         (sourceEdgeProperties == null? "null" : sourceEdgeProperties.size())
         + ", rootInputSpecUpdateCount="
         + (rootInputSpecUpdates == null ? "null" : rootInputSpecUpdates.size())
-        + ", reconfigureByVM=" + reconfigureByVM;
+        + ", setParallelismCalledFlag=" + setParallelismCalledFlag;
   }
 
   public TezVertexID getVertexID() {
@@ -205,7 +205,7 @@ public class VertexReconfigureDoneEvent implements HistoryEvent {
     return reconfigureDoneTime;
   }
 
-  public boolean isReconfigureByVM() {
-    return reconfigureByVM;
+  public boolean isSetParallelismCalled() {
+    return setParallelismCalledFlag;
   }
 }

@@ -136,11 +136,9 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
       }
     }
     if (taGeneratedEvents != null && !taGeneratedEvents.isEmpty()) {
-      List<TezEventProto>  tezEventProtos = Lists.newArrayListWithCapacity(taGeneratedEvents.size());
       for (TezEvent event : taGeneratedEvents) {
-        tezEventProtos.add(TezEventUtils.toProto(event));
+        builder.addTaGeneratedEvents(TezEventUtils.toProto(event));
       }
-      builder.addAllTaGeneratedEvents(tezEventProtos);
     }
     return builder.build();
   }
@@ -171,12 +169,11 @@ public class TaskAttemptFinishedEvent implements HistoryEvent {
         this.dataEvents.add(DataEventDependencyInfo.fromProto(protoEvent));
       }
     }
-    int eventCount = proto.getTaGeneratedEventsCount();
-    if (eventCount > 0) {
-      this.taGeneratedEvents = Lists.newArrayListWithCapacity(eventCount);
-    }
-    for (TezEventProto eventProto : proto.getTaGeneratedEventsList()) {
-      this.taGeneratedEvents.add(TezEventUtils.fromProto(eventProto));
+    if (proto.getTaGeneratedEventsCount() > 0) {
+      this.taGeneratedEvents = Lists.newArrayListWithCapacity(proto.getTaGeneratedEventsCount());
+      for (TezEventProto eventProto : proto.getTaGeneratedEventsList()) {
+        this.taGeneratedEvents.add(TezEventUtils.fromProto(eventProto));
+      }
     }
   }
 

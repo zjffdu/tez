@@ -130,9 +130,7 @@ import org.apache.tez.dag.utils.TezBuilderUtils;
 import org.apache.tez.runtime.api.OutputCommitter;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Collections2;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
@@ -236,6 +234,7 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
           .addTransition(DAGState.NEW, DAGState.NEW,
               DAGEventType.DAG_DIAGNOSTIC_UPDATE,
               DIAGNOSTIC_UPDATE_TRANSITION)
+          // either recovered to FINISHED state or recovered to NEW to rerun the dag based on the recovery data
           .addTransition(DAGState.NEW,
               EnumSet.of(DAGState.NEW, DAGState.SUCCEEDED,
                   DAGState.FAILED, DAGState.KILLED,
@@ -478,10 +477,6 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
 
     public boolean isCommitted() {
       return commitStarted && successfulCommits == outputs.size();
-    }
-
-    public Set<String> getGroupMembers() {
-      return groupMembers;
     }
   }
 
@@ -1623,7 +1618,8 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
    * </li>
    * <li>
    * 2. For the non-completed dag, recover the dag as normal dag execution. The only difference
-   *    is setting the recoveryData before sending DAG_INIT event. 
+   *    is setting the recoveryData before sending DAG_INIT event so that some steps in the execution
+   *    will be skipped based on the recoveryData
    * </li>
    * </ul>
    */
@@ -1650,16 +1646,20 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
           vertexDesiredState = VertexState.ERROR;
           break;
         default:
-          LOG.warn("Invalid desired state of DAG"
+          String msg = "Invalid desired state of DAG"
               + ", dagName=" + dag.getName()
-              + ", state=" + recoverEvent.getDesiredState());
+              + ", state=" + recoverEvent.getDesiredState();
+          LOG.warn(msg);
+          dag.addDiagnostic(msg);
           return dag.finished(DAGState.ERROR);
         }
         // Initialize dag synchronously to generate the vertices and recover its vertices to the desired state.
-        dag.handle(new DAGEvent(dag.getID(), DAGEventType.DAG_INIT));
+        dag.initializeDAG();
         for (Vertex v : dag.vertexMap.values()) {
           dag.eventHandler.handle(new VertexEventRecoverVertex(v.getVertexId(), vertexDesiredState));
         }
+        dag.addDiagnostic("DAG is recovered to finished state:" + recoverEvent.getDesiredState()
+            + ", but will only recover partial data due to incomplete recovery data");
         return dag.finished(recoverEvent.getDesiredState());
       }
 
@@ -1910,6 +1910,14 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
 
   }
 
+  private Collection<TezVertexID> getVertexIds(Collection<String> vertexNames) {
+    List<TezVertexID> vertexIds = new ArrayList<TezVertexID>(vertexNames.size());
+    for (String name : vertexNames) {
+      vertexIds.add(getVertexNameIDMapping().get(name));
+    }
+    return vertexIds;
+  }
+
   private static class VertexReRunningTransition implements
     MultipleArcTransition<DAGImpl, DAGEvent, DAGState> {
 
@@ -1976,13 +1984,7 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
           groupInfo.commitStarted = true;
           final Vertex v = getVertex(groupInfo.groupMembers.iterator().next());
           try {
-            Collection<TezVertexID> vertexIds = Collections2.transform(groupInfo.groupMembers,
-                new Function<String, TezVertexID>() {
-                  @Override
-                  public TezVertexID apply(String vertexName) {
-                    return getVertex(vertexName).getVertexId();
-                  }
-            });
+            Collection<TezVertexID> vertexIds = getVertexIds(groupInfo.groupMembers);
             appContext.getHistoryHandler().handleCriticalEvent(new DAGHistoryEvent(getID(),
                 new VertexGroupCommitStartedEvent(dagId, groupInfo.groupName,
                     vertexIds, clock.getTime())));
@@ -2166,13 +2168,7 @@ public class DAGImpl implements org.apache.tez.dag.app.dag.DAG,
         if (vertexGroup.isCommitted()) {
           if (!commitAllOutputsOnSuccess) {
             try {
-              Collection<TezVertexID> vertexIds = Collections2.transform(vertexGroup.groupMembers,
-                  new Function<String, TezVertexID>() {
-                    @Override
-                    public TezVertexID apply(String vertexName) {
-                      return getVertex(vertexName).getVertexId();
-                    }
-              });
+              Collection<TezVertexID> vertexIds = getVertexIds(vertexGroup.groupMembers);
               appContext.getHistoryHandler().handleCriticalEvent(new DAGHistoryEvent(getID(),
                   new VertexGroupCommitFinishedEvent(getID(), commitCompletedEvent.getOutputKey().getEntityName(),
                       vertexIds, clock.getTime())));

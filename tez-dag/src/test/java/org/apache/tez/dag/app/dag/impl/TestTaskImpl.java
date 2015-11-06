@@ -163,7 +163,7 @@ public class TestTaskImpl {
   }
 
   private void scheduleTaskAttempt(TezTaskID taskId) {
-    mockTask.handle(new TaskEventScheduleTask(taskId, mockTaskSpec, locationHint));
+    mockTask.handle(new TaskEventScheduleTask(taskId, mockTaskSpec, locationHint, false));
     assertTaskScheduledState();
     assertEquals(mockTaskSpec, mockTask.getBaseTaskSpec());
     assertEquals(locationHint, mockTask.getTaskLocationHint());

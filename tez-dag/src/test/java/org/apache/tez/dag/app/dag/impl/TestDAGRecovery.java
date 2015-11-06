@@ -33,6 +33,7 @@ import java.util.concurrent.Callable;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -47,6 +48,7 @@ import org.apache.log4j.LogManager;
 import org.apache.tez.common.MockDNSToSwitchMapping;
 import org.apache.tez.common.security.ACLManager;
 import org.apache.tez.dag.api.TezConfiguration;
+import org.apache.tez.dag.api.client.VertexStatus.State;
 import org.apache.tez.dag.api.oldrecords.TaskAttemptState;
 import org.apache.tez.dag.api.oldrecords.TaskState;
 import org.apache.tez.dag.api.records.DAGProtos;
@@ -110,7 +112,7 @@ import org.apache.tez.dag.history.events.TaskAttemptStartedEvent;
 import org.apache.tez.dag.history.events.TaskFinishedEvent;
 import org.apache.tez.dag.history.events.TaskStartedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.records.TaskAttemptTerminationCause;
 import org.apache.tez.dag.records.TezDAGID;
@@ -121,8 +123,12 @@ import org.apache.tez.runtime.api.Event;
 import org.apache.tez.runtime.api.InputInitializer;
 import org.apache.tez.runtime.api.InputInitializerContext;
 import org.apache.tez.runtime.api.InputSpecUpdate;
+import org.apache.tez.runtime.api.OutputCommitter;
+import org.apache.tez.runtime.api.OutputCommitterContext;
 import org.apache.tez.runtime.api.events.DataMovementEvent;
 import org.apache.tez.runtime.api.events.InputInitializerEvent;
+import org.apache.tez.runtime.api.impl.EventMetaData;
+import org.apache.tez.runtime.api.impl.EventMetaData.EventProducerConsumerType;
 import org.apache.tez.runtime.api.impl.TaskSpec;
 import org.apache.tez.runtime.api.impl.TezEvent;
 import org.apache.tez.runtime.library.common.InputIdentifier;
@@ -162,6 +168,7 @@ public class TestDAGRecovery {
   private DAGPlan dagPlan;
   private DAGImpl dag;
   private TezDAGID dagId;
+  private UserGroupInformation ugi;
   private MockHistoryEventHandler historyEventHandler;
   private TaskAttemptEventDispatcher taskAttemptEventDispatcher;
   private ClusterInfo clusterInfo = new ClusterInfo(Resource.newInstance(8192,
@@ -169,8 +176,11 @@ public class TestDAGRecovery {
   private DAGRecoveryData dagRecoveryData = mock(DAGRecoveryData.class);
 
   private TezVertexID v1Id;   // first vertex
-  private TezTaskID t1Id;     // first task of v1
-  private TezTaskAttemptID ta1Id;   // first task attempt of t1
+  private TezTaskID t1v1Id;     // first task of v1
+  private TezTaskAttemptID ta1t1v1Id;   // first task attempt of the first task of v1
+  private TezVertexID v2Id;
+  private TezTaskID t1v2Id;
+  private TezTaskAttemptID ta1t1v2Id;
 
   ////////////////////////
   private Random rand = new Random();
@@ -335,12 +345,17 @@ public class TestDAGRecovery {
         appContext);
     dag.entityUpdateTracker = new StateChangeNotifierForTest(dag);
     doReturn(dag).when(appContext).getCurrentDAG();
+    ugi = mock(UserGroupInformation.class);
+    UserGroupInformation ugi =dag.getDagUGI();
     doReturn(clusterInfo).when(appContext).getClusterInfo();
     TaskSchedulerManager mockTaskScheduler = mock(TaskSchedulerManager.class);
     doReturn(mockTaskScheduler).when(appContext).getTaskScheduler();
     v1Id = TezVertexID.getInstance(dagId, 0);
-    t1Id = TezTaskID.getInstance(v1Id, 0);
-    ta1Id = TezTaskAttemptID.getInstance(t1Id, 0);
+    t1v1Id = TezTaskID.getInstance(v1Id, 0);
+    ta1t1v1Id = TezTaskAttemptID.getInstance(t1v1Id, 0);
+    v2Id = TezVertexID.getInstance(dagId, 1);
+    t1v2Id = TezTaskID.getInstance(v2Id, 0);
+    ta1t1v2Id = TezTaskAttemptID.getInstance(t1v2Id, 0);
 
     dispatcher.register(CallableEventType.class, new CallableEventDispatcher());
     taskEventDispatcher = new TaskEventDispatcher();
@@ -360,6 +375,35 @@ public class TestDAGRecovery {
     LogManager.getRootLogger().setLevel(Level.DEBUG);
   }
 
+
+  public static class RecoveryNotSupportedOutputCommitter extends OutputCommitter {
+
+    public RecoveryNotSupportedOutputCommitter(
+        OutputCommitterContext committerContext) {
+      super(committerContext);
+    }
+
+    @Override
+    public void initialize() throws Exception {
+    }
+
+    @Override
+    public void setupOutput() throws Exception {
+    }
+
+    @Override
+    public void commitOutput() throws Exception {
+    }
+
+    @Override
+    public void abortOutput(State finalState) throws Exception {
+    }
+    
+    @Override
+    public boolean isTaskRecoverySupported() {
+      return false;
+    }
+  }
 
   /**
    * v1     v2 
@@ -418,7 +462,7 @@ public class TestDAGRecovery {
                         .setName("output2")
                         .setControllerDescriptor(
                             TezEntityDescriptorProto.newBuilder().setClassName(
-                                CountingOutputCommitter.class.getName())))
+                                RecoveryNotSupportedOutputCommitter.class.getName())))
                 .addOutEdgeId("e2").build())
         .addVertex(
             VertexPlan
@@ -623,17 +667,13 @@ public class TestDAGRecovery {
   /**
    * RecoveryEvents:
    *  DAG:  DAGInitedEvent -> DAGStartedEvent 
-   *  V1:   VertexInitGeneratedEvent
+   *  V1:   No any event
    * 
    * Reinitialize V1 again. 
    */
   @Test(timeout=5000)
-  public void testVertexRecoverFromNewWithInputInitEvents() {
+  public void testVertexRecoverFromNew() {
     initMockDAGRecoveryDataForVertex();
-    List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
-    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(null, inputGeneratedTezEvents,
-        null, null, null, null, false);
-    doReturn(vertexRecoveryData).when(dagRecoveryData).getVertexRecoveryData(v1Id);
     
     DAGEventRecoverEvent recoveryEvent = new DAGEventRecoverEvent(dagId, dagRecoveryData);
     dag.handle(recoveryEvent);
@@ -652,7 +692,7 @@ public class TestDAGRecovery {
   /**
    * RecoveryEvents:
    *  DAG:  DAGInitedEvent -> DAGStartedEvent 
-   *  V1:   VertexInitGeneratedEvent -> VertexInitializedEvent
+   *  V1:   VertexInitializedEvent
    * 
    * Reinitialize V1 again. 
    */
@@ -662,8 +702,8 @@ public class TestDAGRecovery {
     List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
     VertexInitializedEvent v1InitedEvent = new VertexInitializedEvent(v1Id, 
         "vertex1", 0L, v1InitedTime, 
-        v1NumTask, "", null);
-    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent, inputGeneratedTezEvents,
+        v1NumTask, "", null, inputGeneratedTezEvents);
+    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent,
         null, null, null, null, false);
     doReturn(vertexRecoveryData).when(dagRecoveryData).getVertexRecoveryData(v1Id);
     
@@ -684,27 +724,31 @@ public class TestDAGRecovery {
   /**
    * RecoveryEvents:
    *  DAG:  DAGInitedEvent -> DAGStartedEvent 
-   *  V1:   VertexInitGeneratedEvent -> VertexReconfigrationDoneEvent -> VertexInitializedEvent
+   *  V1:   VertexReconfigrationDoneEvent -> VertexInitializedEvent
    * 
    * V1 skip initialization. 
    */
-  @Test(timeout=5000)
+  @Test//(timeout=5000)
   public void testVertexRecoverFromInitedAndReconfigureDone() {
     initMockDAGRecoveryDataForVertex();
     List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
     VertexInitializedEvent v1InitedEvent = new VertexInitializedEvent(v1Id, 
         "vertex1", 0L, v1InitedTime, 
-        v1NumTask, "", null);
-    VertexReconfigureDoneEvent v1ReconfigureDoneEvent = new VertexReconfigureDoneEvent(v1Id, 
-        0L, v1NumTask, null, null, null, false);
-    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent, inputGeneratedTezEvents,
-        v1ReconfigureDoneEvent, null, null, null, false);
+        v1NumTask, "", null, inputGeneratedTezEvents);
+    VertexConfigurationDoneEvent v1ReconfigureDoneEvent = new VertexConfigurationDoneEvent(v1Id, 
+        0L, v1NumTask, null, null, null, true);
+    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent,
+        v1ReconfigureDoneEvent, null, null, new HashMap<TezTaskID, TaskRecoveryData>(), false);
     doReturn(vertexRecoveryData).when(dagRecoveryData).getVertexRecoveryData(v1Id);
     
     DAGEventRecoverEvent recoveryEvent = new DAGEventRecoverEvent(dagId, dagRecoveryData);
     dag.handle(recoveryEvent);
     dispatcher.await();
-
+    try {
+      Thread.sleep(1000);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
     VertexImpl v1 = (VertexImpl)dag.getVertex("vertex1");
     VertexImpl v2 = (VertexImpl)dag.getVertex("vertex2");
     VertexImpl v3 = (VertexImpl)dag.getVertex("vertex3");
@@ -720,7 +764,7 @@ public class TestDAGRecovery {
   /**
    * RecoveryEvents:
    *  DAG:  DAGInitedEvent -> DAGStartedEvent 
-   *  V1:   VertexInitGeneratedEvent -> VertexReconfigrationDoneEvent -> VertexInitializedEvent -> VertexStartedEvent
+   *  V1:   VertexReconfigrationDoneEvent -> VertexInitializedEvent -> VertexStartedEvent
    * 
    * V1 skip initialization. 
    */
@@ -730,12 +774,12 @@ public class TestDAGRecovery {
     List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
     VertexInitializedEvent v1InitedEvent = new VertexInitializedEvent(v1Id, 
         "vertex1", 0L, v1InitedTime, 
-        v1NumTask, "", null);
-    VertexReconfigureDoneEvent v1ReconfigureDoneEvent = new VertexReconfigureDoneEvent(v1Id, 
-        0L, v1NumTask, null, null, null, false);
+        v1NumTask, "", null, inputGeneratedTezEvents);
+    VertexConfigurationDoneEvent v1ReconfigureDoneEvent = new VertexConfigurationDoneEvent(v1Id, 
+        0L, v1NumTask, null, null, null, true);
     VertexStartedEvent v1StartedEvent = new VertexStartedEvent(v1Id, 0L, v1StartedTime);
-    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent, inputGeneratedTezEvents,
-        v1ReconfigureDoneEvent, v1StartedEvent, null, null, false);
+    VertexRecoveryData vertexRecoveryData = new VertexRecoveryData(v1InitedEvent,
+        v1ReconfigureDoneEvent, v1StartedEvent, null, new HashMap<TezTaskID, TaskRecoveryData>(), false);
     doReturn(vertexRecoveryData).when(dagRecoveryData).getVertexRecoveryData(v1Id);
     
     DAGEventRecoverEvent recoveryEvent = new DAGEventRecoverEvent(dagId, dagRecoveryData);
@@ -761,13 +805,13 @@ public class TestDAGRecovery {
     List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
     VertexInitializedEvent v1InitedEvent = new VertexInitializedEvent(v1Id, 
         "vertex1", 0L, v1InitedTime, 
-        v1NumTask, "", null);
+        v1NumTask, "", null, inputGeneratedTezEvents);
     Map<String, InputSpecUpdate> rootInputSpecs = new HashMap<String, InputSpecUpdate>();
-    VertexReconfigureDoneEvent v1ReconfigureDoneEvent = new VertexReconfigureDoneEvent(v1Id, 
-        0L, v1NumTask, null, null, rootInputSpecs, false);
+    VertexConfigurationDoneEvent v1ReconfigureDoneEvent = new VertexConfigurationDoneEvent(v1Id, 
+        0L, v1NumTask, null, null, rootInputSpecs, true);
     VertexStartedEvent v1StartedEvent = new VertexStartedEvent(v1Id, 0L, v1StartedTime);
     VertexRecoveryData v1RecoveryData = new VertexRecoveryData(v1InitedEvent,
-        inputGeneratedTezEvents, v1ReconfigureDoneEvent, v1StartedEvent, null, null, false);
+        v1ReconfigureDoneEvent, v1StartedEvent, null, new HashMap<TezTaskID, TaskRecoveryData>(), false);
     
     DAGInitializedEvent dagInitedEvent = new DAGInitializedEvent(dagId, dagInitedTime, 
         "user", "dagName", null);
@@ -784,16 +828,16 @@ public class TestDAGRecovery {
   @Test(timeout=5000)
   public void testTaskRecoverFromKilled() {
     initMockDAGRecoveryDataForTask();
-    TaskFinishedEvent taskFinishedEvent = new TaskFinishedEvent(t1Id, "v1",
+    TaskFinishedEvent taskFinishedEvent = new TaskFinishedEvent(t1v1Id, "v1",
         0L, 0L, null, TaskState.KILLED, "", null, 4);
     TaskRecoveryData taskRecoveryData = new TaskRecoveryData(null, taskFinishedEvent, null);
-    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1Id);
+    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
 
     VertexImpl vertex1 = (VertexImpl) dag.getVertex(v1Id);
-    TaskImpl task = (TaskImpl)vertex1.getTask(t1Id);
+    TaskImpl task = (TaskImpl)vertex1.getTask(t1v1Id);
     assertEquals(TaskStateInternal.KILLED, task.getInternalState());
     assertEquals(1, vertex1.getCompletedTasks());
   }
@@ -805,15 +849,15 @@ public class TestDAGRecovery {
   @Test(timeout=5000)
   public void testTaskRecoverFromStarted() {
     initMockDAGRecoveryDataForTask();
-    TaskStartedEvent taskStartedEvent = new TaskStartedEvent(t1Id, "v1", 0L, 0L);
+    TaskStartedEvent taskStartedEvent = new TaskStartedEvent(t1v1Id, "v1", 0L, 0L);
     TaskRecoveryData taskRecoveryData = new TaskRecoveryData(taskStartedEvent, null, null);
-    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1Id);
+    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
     
     VertexImpl vertex1 = (VertexImpl) dag.getVertex(v1Id);
-    TaskImpl task = (TaskImpl)vertex1.getTask(t1Id);
+    TaskImpl task = (TaskImpl)vertex1.getTask(t1v1Id);
     assertEquals(TaskStateInternal.SCHEDULED, task.getInternalState());
   }
   
@@ -824,32 +868,34 @@ public class TestDAGRecovery {
   @Test(timeout=5000)
   public void testTaskRecoverFromSucceeded() {
     initMockDAGRecoveryDataForTask();
-    TaskStartedEvent taskStartedEvent = new TaskStartedEvent(t1Id, "v1", 0L, 0L);
-    TaskFinishedEvent taskFinishedEvent = new TaskFinishedEvent(t1Id, "v1",
+    TaskStartedEvent taskStartedEvent = new TaskStartedEvent(t1v1Id, "v1", 0L, 0L);
+    TaskFinishedEvent taskFinishedEvent = new TaskFinishedEvent(t1v1Id, "v1",
         0L, 0L, null, TaskState.SUCCEEDED, "", null, 4);
     TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
-        ta1Id, "v1", 0L, mock(ContainerId.class), 
+        ta1t1v1Id, "v1", 0L, mock(ContainerId.class), 
         mock(NodeId.class), "", "", "");
     List<TezEvent> taGeneratedEvents = new ArrayList<TezEvent>();
-    taGeneratedEvents.add(new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), null));
+    EventMetaData metadata = new EventMetaData(EventProducerConsumerType.OUTPUT,
+        "vertex1", "vertex3", ta1t1v2Id);
+    taGeneratedEvents.add(new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), metadata));
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", 0L, 0L, 
+        ta1t1v1Id, "v1", 0L, 0L, 
         TaskAttemptState.SUCCEEDED, null, "", null, 
         null, taGeneratedEvents, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, taFinishedEvent);
     Map<TezTaskAttemptID, TaskAttemptRecoveryData> taRecoveryDataMap =
         new HashMap<TezTaskAttemptID, TaskAttemptRecoveryData>();
-    taRecoveryDataMap.put(ta1Id, taRecoveryData);
+    taRecoveryDataMap.put(ta1t1v1Id, taRecoveryData);
     TaskRecoveryData taskRecoveryData = new TaskRecoveryData(taskStartedEvent, taskFinishedEvent, taRecoveryDataMap);
-    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1Id);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1v1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
 
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
     
     VertexImpl vertex1 = (VertexImpl) dag.getVertex(v1Id);
-    TaskImpl task = (TaskImpl)vertex1.getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)vertex1.getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(VertexState.RUNNING, vertex1.getState());
     assertEquals(1, vertex1.getCompletedTasks());
     assertEquals(TaskStateInternal.SUCCEEDED, task.getInternalState());
@@ -859,21 +905,21 @@ public class TestDAGRecovery {
   /////////////////////////////// TaskAttempt Recovery /////////////////////////////////////////////////////
   
   private void initMockDAGRecoveryDataForTaskAttempt() {
-    TaskStartedEvent t1StartedEvent = new TaskStartedEvent(t1Id, "vertex1", 0L, t1StartedTime);
+    TaskStartedEvent t1StartedEvent = new TaskStartedEvent(t1v1Id, "vertex1", 0L, t1StartedTime);
     TaskRecoveryData taskRecoveryData = new TaskRecoveryData(t1StartedEvent, null, null);
     Map<TezTaskID, TaskRecoveryData> taskRecoveryDataMap = new HashMap<TezTaskID, TaskRecoveryData>();
-    taskRecoveryDataMap.put(t1Id, taskRecoveryData);
+    taskRecoveryDataMap.put(t1v1Id, taskRecoveryData);
     
     List<TezEvent> inputGeneratedTezEvents = new ArrayList<TezEvent>();
     VertexInitializedEvent v1InitedEvent = new VertexInitializedEvent(v1Id, 
         "vertex1", 0L, v1InitedTime, 
-        v1NumTask, "", null);
+        v1NumTask, "", null, inputGeneratedTezEvents);
     Map<String, InputSpecUpdate> rootInputSpecs = new HashMap<String, InputSpecUpdate>();
-    VertexReconfigureDoneEvent v1ReconfigureDoneEvent = new VertexReconfigureDoneEvent(v1Id, 
-        0L, v1NumTask, null, null, rootInputSpecs, false);
+    VertexConfigurationDoneEvent v1ReconfigureDoneEvent = new VertexConfigurationDoneEvent(v1Id, 
+        0L, v1NumTask, null, null, rootInputSpecs, true);
     VertexStartedEvent v1StartedEvent = new VertexStartedEvent(v1Id, 0L, v1StartedTime);
     VertexRecoveryData v1RecoveryData = new VertexRecoveryData(v1InitedEvent,
-        inputGeneratedTezEvents, v1ReconfigureDoneEvent, v1StartedEvent, null, taskRecoveryDataMap, false);
+        v1ReconfigureDoneEvent, v1StartedEvent, null, taskRecoveryDataMap, false);
     
     DAGInitializedEvent dagInitedEvent = new DAGInitializedEvent(dagId, dagInitedTime, 
         "user", "dagName", null);
@@ -891,17 +937,17 @@ public class TestDAGRecovery {
   public void testTARecoverFromNewToFailed() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
+        ta1t1v1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
         TaskAttemptState.FAILED, TaskAttemptTerminationCause.CONTAINER_LAUNCH_FAILED, "", null, 
         null, null, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(null, taFinishedEvent);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
 
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.FAILED, taskAttempt.getInternalState());
     assertEquals(TaskAttemptTerminationCause.CONTAINER_LAUNCH_FAILED, taskAttempt.getTerminationCause());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_STARTED);
@@ -920,17 +966,17 @@ public class TestDAGRecovery {
   public void testTARecoverFromNewToKilled() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
+        ta1t1v1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
         TaskAttemptState.KILLED, TaskAttemptTerminationCause.TERMINATED_BY_CLIENT, "", null, 
         null, null, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(null, taFinishedEvent);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
 
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.KILLED, taskAttempt.getInternalState());
     assertEquals(TaskAttemptTerminationCause.TERMINATED_BY_CLIENT, taskAttempt.getTerminationCause());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_STARTED);
@@ -947,16 +993,16 @@ public class TestDAGRecovery {
   public void testTARecoverFromRunning() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
-        ta1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
+        ta1t1v1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
         mock(NodeId.class), "", "", "");
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, null);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
 
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.KILLED, taskAttempt.getInternalState());
     assertEquals(TaskAttemptTerminationCause.TERMINATED_AT_RECOVERY, taskAttempt.getTerminationCause());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_STARTED);
@@ -972,25 +1018,85 @@ public class TestDAGRecovery {
   public void testTARecoverFromSucceeded() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
-        ta1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
+        ta1t1v1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
         mock(NodeId.class), "", "", "");
     List<TezEvent> taGeneratedEvents = new ArrayList<TezEvent>();
     taGeneratedEvents.add(new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), null));
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
+        ta1t1v1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
         TaskAttemptState.SUCCEEDED, null, "", null, 
         null, taGeneratedEvents, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, taFinishedEvent);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
 
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
     
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.SUCCEEDED, taskAttempt.getInternalState());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_FINISHED);
     assertEquals(TaskStateInternal.SUCCEEDED, task.getInternalState());
+    assertEquals(ta1LaunchTime, taskAttempt.getLaunchTime());
+    assertEquals(ta1FinishedTime, taskAttempt.getFinishTime());
+  }
+
+  /**
+   * RecoveryEvents: TaskAttemptStartedEvent -> TaskAttemptFinishedEvent (SUCCEEDED)
+   * Recovered it SUCCEEDED, but task schedule new task attempt
+   * V2's committer is not recovery supported
+   */
+  @Test//(timeout=5000)
+  public void testTARecoverFromSucceeded_OutputCommitterRecoveryNotSupported() {
+    initMockDAGRecoveryDataForTaskAttempt();
+    // set up v2 recovery data
+    // ta1t1v2: TaskAttemptStartedEvent -> TaskAttemptFinishedEvent(SUCCEEDED)
+    // t1v2: TaskStartedEvent
+    // v2: VertexInitializedEvent -> VertexConfigurationDoneEvent -> VertexStartedEvent
+    TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
+        ta1t1v2Id, "vertex2", ta1LaunchTime, mock(ContainerId.class), 
+        mock(NodeId.class), "", "", "");
+    List<TezEvent> taGeneratedEvents = new ArrayList<TezEvent>();
+    EventMetaData metadata = new EventMetaData(EventProducerConsumerType.OUTPUT,
+        "vertex2", "vertex3", ta1t1v2Id);
+    taGeneratedEvents.add(new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), metadata));
+    TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
+        ta1t1v2Id, "vertex2", ta1LaunchTime, ta1FinishedTime, 
+        TaskAttemptState.SUCCEEDED, null, "", null, 
+        null, taGeneratedEvents, 0L, null, 0L);
+    TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, taFinishedEvent);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v2Id);   
+    Map<TezTaskAttemptID, TaskAttemptRecoveryData> taRecoveryDataMap =
+        new HashMap<TezTaskAttemptID, TaskAttemptRecoveryData>();
+    taRecoveryDataMap.put(ta1t1v2Id, taRecoveryData);
+ 
+    TaskStartedEvent t1StartedEvent = new TaskStartedEvent(t1v2Id, "vertex2", 0L, t1StartedTime);
+    TaskRecoveryData taskRecoveryData = new TaskRecoveryData(t1StartedEvent, null, taRecoveryDataMap);
+    Map<TezTaskID, TaskRecoveryData> taskRecoveryDataMap = new HashMap<TezTaskID, TaskRecoveryData>();
+    taskRecoveryDataMap.put(t1v2Id, taskRecoveryData);
+    doReturn(taskRecoveryData).when(dagRecoveryData).getTaskRecoveryData(t1v2Id);
+
+    VertexInitializedEvent v2InitedEvent = new VertexInitializedEvent(v2Id, 
+        "vertex2", 0L, v1InitedTime, 
+        v1NumTask, "", null, null);
+    VertexConfigurationDoneEvent v2ReconfigureDoneEvent = new VertexConfigurationDoneEvent(v2Id, 
+        0L, v1NumTask, null, null, null, false);
+    VertexStartedEvent v2StartedEvent = new VertexStartedEvent(v2Id, 0L, v1StartedTime);
+    VertexRecoveryData v2RecoveryData = new VertexRecoveryData(v2InitedEvent,
+        v2ReconfigureDoneEvent, v2StartedEvent, null, taskRecoveryDataMap, false);
+    doReturn(v2RecoveryData).when(dagRecoveryData).getVertexRecoveryData(v2Id);
+
+
+    dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
+    dispatcher.await();
+    
+    TaskImpl task = (TaskImpl)dag.getVertex(v2Id).getTask(t1v2Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v2Id);
+    assertEquals(TaskAttemptStateInternal.SUCCEEDED, taskAttempt.getInternalState());
+    historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_FINISHED);
+    assertEquals(TaskStateInternal.RUNNING, task.getInternalState());
+    // new task attempt is scheduled
+    assertEquals(2, task.getAttempts().size());
     assertEquals(ta1LaunchTime, taskAttempt.getLaunchTime());
     assertEquals(ta1FinishedTime, taskAttempt.getFinishTime());
   }
@@ -1003,23 +1109,23 @@ public class TestDAGRecovery {
   public void testTARecoverFromFailed() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
-        ta1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
+        ta1t1v1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
         mock(NodeId.class), "", "", "");
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
+        ta1t1v1Id, "v1", ta1LaunchTime, ta1FinishedTime, 
         TaskAttemptState.FAILED, TaskAttemptTerminationCause.INPUT_READ_ERROR, "", null, 
         null, null, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, taFinishedEvent);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
     
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.FAILED, taskAttempt.getInternalState());
     assertEquals(TaskAttemptTerminationCause.INPUT_READ_ERROR, taskAttempt.getTerminationCause());
-    assertEquals(TaskStateInternal.RUNNING, task.getInternalState());
+    assertEquals(TaskStateInternal.SCHEDULED, task.getInternalState());
     assertEquals(2, task.getAttempts().size());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_FINISHED);
     assertEquals(ta1LaunchTime, taskAttempt.getLaunchTime());
@@ -1034,20 +1140,20 @@ public class TestDAGRecovery {
   public void testTARecoverFromKilled() {
     initMockDAGRecoveryDataForTaskAttempt();
     TaskAttemptStartedEvent taStartedEvent = new TaskAttemptStartedEvent(
-        ta1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
+        ta1t1v1Id, "v1", ta1LaunchTime, mock(ContainerId.class), 
         mock(NodeId.class), "", "", "");
     TaskAttemptFinishedEvent taFinishedEvent = new TaskAttemptFinishedEvent(
-        ta1Id, "v1", ta1FinishedTime, ta1FinishedTime, 
+        ta1t1v1Id, "v1", ta1FinishedTime, ta1FinishedTime, 
         TaskAttemptState.KILLED, TaskAttemptTerminationCause.TERMINATED_BY_CLIENT, "", null, 
         null, null, 0L, null, 0L);
     TaskAttemptRecoveryData taRecoveryData = new TaskAttemptRecoveryData(taStartedEvent, taFinishedEvent);
-    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1Id);
+    doReturn(taRecoveryData).when(dagRecoveryData).getTaskAttemptRecoveryData(ta1t1v1Id);
     
     dag.handle(new DAGEventRecoverEvent(dagId, dagRecoveryData));
     dispatcher.await();
     
-    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1Id);
-    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1Id);
+    TaskImpl task = (TaskImpl)dag.getVertex(v1Id).getTask(t1v1Id);
+    TaskAttemptImpl taskAttempt = (TaskAttemptImpl)task.getAttempt(ta1t1v1Id);
     assertEquals(TaskAttemptStateInternal.KILLED, taskAttempt.getInternalState());
     assertEquals(TaskAttemptTerminationCause.TERMINATED_BY_CLIENT, taskAttempt.getTerminationCause());
     historyEventHandler.verifyHistoryEvent(0, HistoryEventType.TASK_ATTEMPT_FINISHED);

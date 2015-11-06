@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
@@ -62,7 +63,6 @@ import org.apache.tez.dag.history.events.VertexCommitStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
 import org.apache.tez.dag.history.events.VertexGroupCommitFinishedEvent;
 import org.apache.tez.dag.history.events.VertexGroupCommitStartedEvent;
-import org.apache.tez.dag.history.events.VertexInitGeneratedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.recovery.RecoveryService;
@@ -640,20 +640,20 @@ public class TestRecoveryParser {
     TezVertexID v1Id = TezVertexID.getInstance(dagID, 1);
     TezVertexID v2Id = TezVertexID.getInstance(dagID, 2);
     // v0 VertexInitializedEvent
-    VertexInitializedEvent v0InitedEvent =  new VertexInitializedEvent(v0Id, "v0", 200L, 400L, 2, null, null);
+    VertexInitializedEvent v0InitedEvent =  new VertexInitializedEvent(v0Id, "v0", 200L, 400L, 2, null, null, null);
     rService.handle(new DAGHistoryEvent(dagID, v0InitedEvent));
     // v1 VertexFinishedEvent(KILLED)
     VertexFinishedEvent v1FinishedEvent = new VertexFinishedEvent(v1Id, "v1", 2, 300L, 400L, 
         500L, 600L, 700L, VertexState.KILLED, 
         "", null, null, null);
     rService.handle(new DAGHistoryEvent(dagID, v1FinishedEvent));
-    // v2 VertexInitializedEvent -> VertexInitGeneratedEvent -> VertexStartedEvent
-    VertexInitializedEvent v2InitedEvent = new VertexInitializedEvent(v2Id, "v2", 200L, 300L, 2, null, null);
-    VertexInitGeneratedEvent v2InitGeneratedEvent = new VertexInitGeneratedEvent(v2Id,
-        Lists.newArrayList(new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), null)));
+    // v2 VertexInitializedEvent -> VertexStartedEvent
+    List<TezEvent> initGeneratedEvents = Lists.newArrayList(
+        new TezEvent(DataMovementEvent.create(ByteBuffer.wrap(new byte[0])), null));
+    VertexInitializedEvent v2InitedEvent = new VertexInitializedEvent(v2Id, "v2", 200L, 300L,
+        2, null, null, initGeneratedEvents);
     VertexStartedEvent v2StartedEvent = new VertexStartedEvent(v2Id, 0L, 0L);
     rService.handle(new DAGHistoryEvent(dagID, v2InitedEvent));
-    rService.handle(new DAGHistoryEvent(dagID, v2InitGeneratedEvent));
     rService.handle(new DAGHistoryEvent(dagID, v2StartedEvent));
 
     // 3 tasks of v2
@@ -714,7 +714,6 @@ public class TestRecoveryParser {
     assertNull(v1Data.getVertexInitedEvent());
     assertEquals(v1FinishedEvent.getFinishTime(), v1Data.getVertexFinishedEvent().getFinishTime());
     assertEquals(v2InitedEvent.getInitedTime(), v2Data.getVertexInitedEvent().getInitedTime());
-    assertEquals(v2InitGeneratedEvent.getTezEvents().size(), v2Data.getInitGeneratedTezEvents().size());
     assertEquals(v2StartedEvent.getStartTime(), v2Data.getVertexStartedEvent().getStartTime());
 
     TaskRecoveryData t0v2Data = dagData.getTaskRecoveryData(t0v2Id);

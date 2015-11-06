@@ -50,7 +50,7 @@ import org.apache.tez.dag.history.events.TaskFinishedEvent;
 import org.apache.tez.dag.history.events.TaskStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.logging.EntityTypes;
 import org.apache.tez.dag.history.utils.DAGUtils;
@@ -113,15 +113,14 @@ public class HistoryEventTimelineConversion {
       case TASK_ATTEMPT_FINISHED:
         timelineEntity = convertTaskAttemptFinishedEvent((TaskAttemptFinishedEvent) historyEvent);
         break;
-      case VERTEX_RECONFIGURE_DONE:
+      case VERTEX_CONFIGURE_DONE:
         timelineEntity = convertVertexReconfigureDoneEvent(
-            (VertexReconfigureDoneEvent) historyEvent);
+            (VertexConfigurationDoneEvent) historyEvent);
         break;
       case DAG_RECOVERED:
         timelineEntity = convertDAGRecoveredEvent(
             (DAGRecoveredEvent) historyEvent);
         break;
-      case VERTEX_INIT_GENERATED_EVENTS:
       case VERTEX_COMMIT_STARTED:
       case VERTEX_GROUP_COMMIT_STARTED:
       case VERTEX_GROUP_COMMIT_FINISHED:
@@ -658,7 +657,7 @@ public class HistoryEventTimelineConversion {
   }
 
   private static TimelineEntity convertVertexReconfigureDoneEvent(
-      VertexReconfigureDoneEvent event) {
+      VertexConfigurationDoneEvent event) {
     TimelineEntity atsEntity = new TimelineEntity();
     atsEntity.setEntityId(event.getVertexID().toString());
     atsEntity.setEntityType(EntityTypes.TEZ_VERTEX_ID.name());
@@ -669,7 +668,7 @@ public class HistoryEventTimelineConversion {
         event.getVertexID().getDAGId().toString());
 
     TimelineEvent updateEvt = new TimelineEvent();
-    updateEvt.setEventType(HistoryEventType.VERTEX_RECONFIGURE_DONE.name());
+    updateEvt.setEventType(HistoryEventType.VERTEX_CONFIGURE_DONE.name());
     updateEvt.setTimestamp(event.getReconfigureDoneTime());
 
     Map<String,Object> eventInfo = new HashMap<String, Object>();

@@ -37,7 +37,6 @@ import com.google.common.collect.Lists;
 @Public
 public class InputSpecUpdate {
 
-
   private final boolean forAllWorkUnits;
   private final List<Integer> numPhysicalInputs;
 
@@ -102,35 +101,6 @@ public class InputSpecUpdate {
   /* Used for recovery serialization */
   public List<Integer> getAllNumPhysicalInputs() {
     return numPhysicalInputs;
-  }
-
-  @Override
-  public int hashCode() {
-    final int prime = 31;
-    int result = 1;
-    result = prime * result + (forAllWorkUnits ? 1231 : 1237);
-    result = prime * result
-        + ((numPhysicalInputs == null) ? 0 : numPhysicalInputs.hashCode());
-    return result;
-  }
-
-  @Override
-  public boolean equals(Object obj) {
-    if (this == obj)
-      return true;
-    if (obj == null)
-      return false;
-    if (getClass() != obj.getClass())
-      return false;
-    InputSpecUpdate other = (InputSpecUpdate) obj;
-    if (forAllWorkUnits != other.forAllWorkUnits)
-      return false;
-    if (numPhysicalInputs == null) {
-      if (other.numPhysicalInputs != null)
-        return false;
-    } else if (!numPhysicalInputs.equals(other.numPhysicalInputs))
-      return false;
-    return true;
   }
 
   @Override

@@ -63,9 +63,8 @@ import org.apache.tez.dag.history.events.VertexCommitStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
 import org.apache.tez.dag.history.events.VertexGroupCommitFinishedEvent;
 import org.apache.tez.dag.history.events.VertexGroupCommitStartedEvent;
-import org.apache.tez.dag.history.events.VertexInitGeneratedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.recovery.RecoveryService;
 import org.apache.tez.dag.records.TezDAGID;
@@ -303,11 +302,8 @@ public class RecoveryParser {
       case VERTEX_INITIALIZED:
         event = new VertexInitializedEvent();
         break;
-      case VERTEX_INIT_GENERATED_EVENTS:
-        event = new VertexInitGeneratedEvent();
-        break;
-      case VERTEX_RECONFIGURE_DONE:
-        event = new VertexReconfigureDoneEvent();
+      case VERTEX_CONFIGURE_DONE:
+        event = new VertexConfigurationDoneEvent();
         break;
       case VERTEX_STARTED:
         event = new VertexStartedEvent();
@@ -340,10 +336,6 @@ public class RecoveryParser {
         throw new IOException("Invalid data found, unknown event type "
             + eventType);
 
-    }
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Parsing event from input stream"
-          + ", eventType=" + eventType);
     }
     try {
       event.fromProtoStream(inputStream);
@@ -820,19 +812,11 @@ public class RecoveryParser {
             vertexRecoveryData.vertexInitedEvent = vertexInitEvent;
             break;
           }
-          case VERTEX_INIT_GENERATED_EVENTS:
+          case VERTEX_CONFIGURE_DONE:
           {
-            VertexInitGeneratedEvent initGeneratedEvent = (VertexInitGeneratedEvent)event;
-            VertexRecoveryData vertexRecoveryData = recoveredDAGData.maybeCreateVertexRecoveryData(initGeneratedEvent.getVertexID());
-            // remove it if vertex init is not completed
-            vertexRecoveryData.initGeneratedTezEvents.addAll(initGeneratedEvent.getTezEvents());
-            break;
-          }
-          case VERTEX_RECONFIGURE_DONE:
-          {
-            VertexReconfigureDoneEvent reconfigureDoneEvent = (VertexReconfigureDoneEvent)event;
+            VertexConfigurationDoneEvent reconfigureDoneEvent = (VertexConfigurationDoneEvent)event;
             VertexRecoveryData vertexRecoveryData = recoveredDAGData.maybeCreateVertexRecoveryData(reconfigureDoneEvent.getVertexID());
-            vertexRecoveryData.vertexReconfigureDoneEvent = reconfigureDoneEvent;
+            vertexRecoveryData.vertexConfigurationDoneEvent = reconfigureDoneEvent;
             break;
           }
           case VERTEX_STARTED:
@@ -924,8 +908,7 @@ public class RecoveryParser {
   public static class VertexRecoveryData {
 
     private VertexInitializedEvent vertexInitedEvent;
-    private List<TezEvent> initGeneratedTezEvents = new ArrayList<TezEvent>();
-    private VertexReconfigureDoneEvent vertexReconfigureDoneEvent;
+    private VertexConfigurationDoneEvent vertexConfigurationDoneEvent;
     private VertexStartedEvent vertexStartedEvent;
     private VertexFinishedEvent vertexFinishedEvent;
     private Map<TezTaskID, TaskRecoveryData> taskRecoveryDataMap =
@@ -934,15 +917,13 @@ public class RecoveryParser {
 
     @VisibleForTesting
     public VertexRecoveryData(VertexInitializedEvent vertexInitedEvent,
-        List<TezEvent> initGeneratedTezEvents,
-        VertexReconfigureDoneEvent vertexReconfigureDoneEvent,
+        VertexConfigurationDoneEvent vertexReconfigureDoneEvent,
         VertexStartedEvent vertexStartedEvent,
         VertexFinishedEvent vertexFinishedEvent,
         Map<TezTaskID, TaskRecoveryData> taskRecoveryDataMap, boolean commited) {
       super();
       this.vertexInitedEvent = vertexInitedEvent;
-      this.initGeneratedTezEvents = initGeneratedTezEvents;
-      this.vertexReconfigureDoneEvent = vertexReconfigureDoneEvent;
+      this.vertexConfigurationDoneEvent = vertexReconfigureDoneEvent;
       this.vertexStartedEvent = vertexStartedEvent;
       this.vertexFinishedEvent = vertexFinishedEvent;
       this.taskRecoveryDataMap = taskRecoveryDataMap;
@@ -965,16 +946,12 @@ public class RecoveryParser {
       return vertexFinishedEvent;
     }
 
-    public VertexReconfigureDoneEvent getVertexReconfigureDoneEvent() {
-      return vertexReconfigureDoneEvent;
-    }
-
-    public List<TezEvent> getInitGeneratedTezEvents() {
-      return initGeneratedTezEvents;
+    public VertexConfigurationDoneEvent getVertexConfigurationDoneEvent() {
+      return vertexConfigurationDoneEvent;
     }
 
     public boolean isReconfigureDone() {
-      return vertexReconfigureDoneEvent != null;
+      return vertexConfigurationDoneEvent != null;
     }
 
     public boolean isVertexInited() {
@@ -982,7 +959,7 @@ public class RecoveryParser {
     }
 
     public boolean shouldSkipInit() {
-      return vertexInitedEvent != null && vertexReconfigureDoneEvent != null;
+      return vertexInitedEvent != null && vertexConfigurationDoneEvent != null;
     }
 
     public boolean isVertexStarted() {
@@ -1004,6 +981,10 @@ public class RecoveryParser {
       return this.commited;
     }
 
+    public TaskRecoveryData getTaskRecoveryData(TezTaskID taskId) {
+      return taskRecoveryDataMap.get(taskId);
+    }
+
     public TaskRecoveryData maybeCreateTaskRecoveryData(TezTaskID taskId) {
       TaskRecoveryData taskRecoveryData = taskRecoveryDataMap.get(taskId);
       if (taskRecoveryData == null) {
@@ -1017,7 +998,6 @@ public class RecoveryParser {
     public String toString() {
       StringBuilder builder = new StringBuilder();
       builder.append("VertexInitedEvent=" + vertexInitedEvent);
-      builder.append("VertexInitGeneratedTezEvents Size=" + initGeneratedTezEvents.size());
       builder.append("");
       return builder.toString();
     }

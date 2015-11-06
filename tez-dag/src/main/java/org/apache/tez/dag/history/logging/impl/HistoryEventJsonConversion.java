@@ -42,7 +42,7 @@ import org.apache.tez.dag.history.events.TaskFinishedEvent;
 import org.apache.tez.dag.history.events.TaskStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.logging.EntityTypes;
 import org.apache.tez.dag.history.utils.DAGUtils;
@@ -108,8 +108,8 @@ public class HistoryEventJsonConversion {
       case TASK_ATTEMPT_FINISHED:
         jsonObject = convertTaskAttemptFinishedEvent((TaskAttemptFinishedEvent) historyEvent);
         break;
-      case VERTEX_RECONFIGURE_DONE:
-        jsonObject = convertVertexReconfigureDoneEvent((VertexReconfigureDoneEvent) historyEvent);
+      case VERTEX_CONFIGURE_DONE:
+        jsonObject = convertVertexReconfigureDoneEvent((VertexConfigurationDoneEvent) historyEvent);
         break;
       case DAG_RECOVERED:
         jsonObject = convertDAGRecoveredEvent((DAGRecoveredEvent) historyEvent);
@@ -703,7 +703,7 @@ public class HistoryEventJsonConversion {
     return jsonObject;
   }
 
-  private static JSONObject convertVertexReconfigureDoneEvent(VertexReconfigureDoneEvent event) throws JSONException {
+  private static JSONObject convertVertexReconfigureDoneEvent(VertexConfigurationDoneEvent event) throws JSONException {
     JSONObject jsonObject = new JSONObject();
     jsonObject.put(ATSConstants.ENTITY, event.getVertexID().toString());
     jsonObject.put(ATSConstants.ENTITY_TYPE, EntityTypes.TEZ_VERTEX_ID.name());
@@ -713,7 +713,7 @@ public class HistoryEventJsonConversion {
     JSONObject updateEvent = new JSONObject();
     updateEvent.put(ATSConstants.TIMESTAMP, event.getReconfigureDoneTime());
     updateEvent.put(ATSConstants.EVENT_TYPE,
-        HistoryEventType.VERTEX_RECONFIGURE_DONE.name());
+        HistoryEventType.VERTEX_CONFIGURE_DONE.name());
 
     JSONObject eventInfo = new JSONObject();
     eventInfo.put(ATSConstants.NUM_TASKS, event.getNumTasks());

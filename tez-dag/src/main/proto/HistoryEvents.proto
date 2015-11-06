@@ -90,7 +90,8 @@ message VertexInitializedProto {
   optional int64 init_time = 4;
   optional int32 num_tasks = 5;
   repeated RootInputLeafOutputProto inputs = 6;
-  optional bool isReconfigurePlanned = 7;
+  repeated TezEventProto init_generated_events = 7; 
+  optional bool isReconfigurePlanned = 8;
 }
 
 message VertexStartedProto {
@@ -100,14 +101,14 @@ message VertexStartedProto {
   optional int64 start_time = 4;
 }
 
-message VertexReconfigureDoneProto {
+message VertexConfigurationDoneProto {
   optional string vertex_id = 1;
   optional int64 reconfigure_done_time = 2;
   optional int32 num_tasks = 3;
   optional VertexLocationHintProto vertex_location_hint = 4;
   repeated EdgeManagerDescriptorProto edge_manager_descriptors = 5;
   repeated RootInputSpecUpdateProto root_input_spec_updates = 6;
-  optional bool reconfigure_by_vm = 7;
+  optional bool setParallelismCalled_flag = 7;
 }
 
 message EdgeManagerDescriptorProto {
@@ -207,11 +208,6 @@ message TezEventProto {
   optional RootInputInitializerEventProto input_initializer_event = 6;
   optional int64 event_time = 7;
   optional VertexManagerEventProto vm_event = 8;
-}
-
-message VertexInitGeneratedEventProto {
-  optional string vertex_id = 1;
-  repeated TezEventProto tez_events = 2;
 }
 
 message SummaryEventProto {

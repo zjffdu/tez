@@ -37,9 +37,8 @@ import org.apache.tez.dag.history.events.TaskAttemptStartedEvent;
 import org.apache.tez.dag.history.events.TaskFinishedEvent;
 import org.apache.tez.dag.history.events.TaskStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
-import org.apache.tez.dag.history.events.VertexInitGeneratedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.recovery.RecoveryService;
 import org.apache.tez.dag.records.TezDAGID;
@@ -321,18 +320,10 @@ public class RecoveryServiceWithEventHandlingHook extends RecoveryService {
           return otherEvent.getVertexID().getId() == conditionEvent.getVertexID().getId();
         }
         break;
-      case VERTEX_INIT_GENERATED_EVENTS:
-        if (incomingEvent.getEventType() == HistoryEventType.VERTEX_INIT_GENERATED_EVENTS) {
-          VertexInitGeneratedEvent otherEvent = (VertexInitGeneratedEvent) incomingEvent;
-          VertexInitGeneratedEvent conditionEvent = (VertexInitGeneratedEvent) event;
-          // compare vertexId
-          return otherEvent.getVertexID().getId() == conditionEvent.getVertexID().getId();
-        }
-        break;
-      case VERTEX_RECONFIGURE_DONE:
-        if (incomingEvent.getEventType() == HistoryEventType.VERTEX_RECONFIGURE_DONE) {
-          VertexReconfigureDoneEvent otherEvent = (VertexReconfigureDoneEvent) incomingEvent;
-          VertexReconfigureDoneEvent conditionEvent = (VertexReconfigureDoneEvent) event;
+      case VERTEX_CONFIGURE_DONE:
+        if (incomingEvent.getEventType() == HistoryEventType.VERTEX_CONFIGURE_DONE) {
+          VertexConfigurationDoneEvent otherEvent = (VertexConfigurationDoneEvent) incomingEvent;
+          VertexConfigurationDoneEvent conditionEvent = (VertexConfigurationDoneEvent) event;
           // compare vertexId
           return otherEvent.getVertexID().getId() == conditionEvent.getVertexID().getId();
         }

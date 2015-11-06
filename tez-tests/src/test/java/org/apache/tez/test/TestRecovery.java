@@ -25,10 +25,10 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
@@ -59,9 +59,8 @@ import org.apache.tez.dag.history.events.TaskAttemptStartedEvent;
 import org.apache.tez.dag.history.events.TaskFinishedEvent;
 import org.apache.tez.dag.history.events.TaskStartedEvent;
 import org.apache.tez.dag.history.events.VertexFinishedEvent;
-import org.apache.tez.dag.history.events.VertexInitGeneratedEvent;
 import org.apache.tez.dag.history.events.VertexInitializedEvent;
-import org.apache.tez.dag.history.events.VertexReconfigureDoneEvent;
+import org.apache.tez.dag.history.events.VertexConfigurationDoneEvent;
 import org.apache.tez.dag.history.events.VertexStartedEvent;
 import org.apache.tez.dag.history.recovery.RecoveryService;
 import org.apache.tez.dag.library.vertexmanager.ShuffleVertexManager;
@@ -137,8 +136,7 @@ public class TestRecovery {
     }
   }
 
-  @Test
-  // (timeout = 600000)
+  @Test(timeout=1800000)
   public void testRecovery_OrderedWordCount() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(System.currentTimeMillis(),
         1);
@@ -150,13 +148,11 @@ public class TestRecovery {
         ApplicationAttemptId.newInstance(appId, 1), 1);
     NodeId nodeId = NodeId.newInstance("localhost", 10);
     
-    VertexInitGeneratedEvent vertexInitGeneratedEvent = new VertexInitGeneratedEvent(
-        vertexId0, Lists.newArrayList(
-            new TezEvent(InputDataInformationEvent.createWithObjectPayload(0, new Object()), null)));
+    List<TezEvent> initGeneratedEvents = Lists.newArrayList(
+            new TezEvent(InputDataInformationEvent.createWithObjectPayload(0, new Object()), null));
 
     List<SimpleShutdownCondition> shutdownConditions = Lists
         .newArrayList(
-            new SimpleShutdownCondition(TIMING.POST, vertexInitGeneratedEvent),
             new SimpleShutdownCondition(TIMING.POST, new DAGInitializedEvent(
                 dagId, 0L, "username", "dagName", null)),
             new SimpleShutdownCondition(TIMING.POST, new DAGStartedEvent(dagId,
@@ -167,14 +163,25 @@ public class TestRecovery {
                 ApplicationAttemptId.newInstance(appId, 1))),
             new SimpleShutdownCondition(TIMING.POST,
                 new VertexInitializedEvent(vertexId0, "Tokenizer", 0L, 0L, 0,
-                    "", null)),
+                    "", null, initGeneratedEvents)),
             new SimpleShutdownCondition(TIMING.POST,
                 new VertexInitializedEvent(vertexId1, "Summation", 0L, 0L, 0,
-                    "", null)),
+                    "", null, null)),
             new SimpleShutdownCondition(TIMING.POST,
                 new VertexInitializedEvent(vertexId2, "Sorter", 0L, 0L, 0, "",
-                    null)),
+                    null, null)),
 
+            new SimpleShutdownCondition(TIMING.POST,
+                new VertexConfigurationDoneEvent(vertexId0, 0L, 2, null, null,
+                    null, true)),
+                        
+            new SimpleShutdownCondition(TIMING.POST,
+                new VertexConfigurationDoneEvent(vertexId1, 0L, 2, null, null,
+                    null, true)),
+
+            new SimpleShutdownCondition(TIMING.POST,
+                new VertexConfigurationDoneEvent(vertexId2, 0L, 2, null, null,
+                    null, true)),
             new SimpleShutdownCondition(TIMING.POST, new VertexStartedEvent(
                 vertexId0, 0L, 0L)),
             new SimpleShutdownCondition(TIMING.POST, new VertexStartedEvent(
@@ -194,18 +201,6 @@ public class TestRecovery {
                 vertexId2, "vertexName", 1, 0L, 0L, 0L, 0L, 0L,
                 VertexState.SUCCEEDED, "", new TezCounters(),
                 new VertexStats(), new HashMap<String, Integer>())),
-
-            new SimpleShutdownCondition(TIMING.POST,
-                new VertexReconfigureDoneEvent(vertexId0, 0L, 2, null, null,
-                    null, false)),
-                        
-            new SimpleShutdownCondition(TIMING.POST,
-                new VertexReconfigureDoneEvent(vertexId1, 0L, 2, null, null,
-                    null, true)),
-
-            new SimpleShutdownCondition(TIMING.POST,
-                new VertexReconfigureDoneEvent(vertexId2, 0L, 2, null, null,
-                    null, true)),
 
             new SimpleShutdownCondition(TIMING.POST, new TaskStartedEvent(
                 TezTaskID.getInstance(vertexId0, 0), "vertexName", 0L, 0L)),
@@ -275,7 +270,7 @@ public class TestRecovery {
     tezConf.set(TezConfiguration.TEZ_AM_STAGING_DIR, stagingDirPath.toString());
     tezConf.setBoolean(
         TezConfiguration.TEZ_AM_STAGING_SCRATCH_DATA_AUTO_DELETE, false);
-    tezConf.set(TezConfiguration.TEZ_AM_LOG_LEVEL, "DEBUG");
+    tezConf.set(TezConfiguration.TEZ_AM_LOG_LEVEL, "INFO;org.apache.tez=DEBUG");
 
     OrderedWordCount job = new OrderedWordCount();
     Assert
@@ -292,8 +287,7 @@ public class TestRecovery {
 
   }
 
-  @Test
-  // (timeout = 600000)
+  @Test(timeout = 1800000)
   public void testRecovery_HashJoin() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(System.currentTimeMillis(),
         1);
@@ -304,13 +298,10 @@ public class TestRecovery {
     ContainerId containerId = ContainerId.newContainerId(
         ApplicationAttemptId.newInstance(appId, 1), 1);
     NodeId nodeId = NodeId.newInstance("localhost", 10);
-    VertexInitGeneratedEvent vertexInitGeneratedEvent = new VertexInitGeneratedEvent(
-        vertexId0, Lists.newArrayList(
-            new TezEvent(InputDataInformationEvent.createWithObjectPayload(0, new Object()), null)));
+    List<TezEvent> initGeneratedEvents = Lists.newArrayList(
+        new TezEvent(InputDataInformationEvent.createWithObjectPayload(0, new Object()), null));
 
     List<SimpleShutdownCondition> shutdownConditions = Lists.newArrayList(
-
-        new SimpleShutdownCondition(TIMING.POST, vertexInitGeneratedEvent),
 
         new SimpleShutdownCondition(TIMING.POST, new DAGInitializedEvent(dagId,
             0L, "username", "dagName", null)),
@@ -321,11 +312,11 @@ public class TestRecovery {
             "dagName", new HashMap<String, Integer>(), ApplicationAttemptId
                 .newInstance(appId, 1))),
         new SimpleShutdownCondition(TIMING.POST, new VertexInitializedEvent(
-            vertexId0, "hashSide", 0L, 0L, 0, "", null)),
+            vertexId0, "hashSide", 0L, 0L, 0, "", null, initGeneratedEvents)),
         new SimpleShutdownCondition(TIMING.POST, new VertexInitializedEvent(
-            vertexId1, "streamingSide", 0L, 0L, 0, "", null)),
+            vertexId1, "streamingSide", 0L, 0L, 0, "", null, null)),
         new SimpleShutdownCondition(TIMING.POST, new VertexInitializedEvent(
-            vertexId2, "joiner", 0L, 0L, 0, "", null)),
+            vertexId2, "joiner", 0L, 0L, 0, "", null, null)),
 
         new SimpleShutdownCondition(TIMING.POST, new VertexStartedEvent(
             vertexId0, 0L, 0L)),
@@ -335,15 +326,15 @@ public class TestRecovery {
             vertexId2, 0L, 0L)),
 
         new SimpleShutdownCondition(TIMING.POST,
-            new VertexReconfigureDoneEvent(vertexId0, 0L, 2, null, null,
-                null, false)),
+            new VertexConfigurationDoneEvent(vertexId0, 0L, 2, null, null,
+                null, true)),
                     
         new SimpleShutdownCondition(TIMING.POST,
-            new VertexReconfigureDoneEvent(vertexId1, 0L, 2, null, null,
+            new VertexConfigurationDoneEvent(vertexId1, 0L, 2, null, null,
                 null, true)),
 
         new SimpleShutdownCondition(TIMING.POST,
-            new VertexReconfigureDoneEvent(vertexId2, 0L, 2, null, null,
+            new VertexConfigurationDoneEvent(vertexId2, 0L, 2, null, null,
                 null, true)),
                     
         new SimpleShutdownCondition(TIMING.POST, new VertexFinishedEvent(
@@ -415,6 +406,7 @@ public class TestRecovery {
         RecoveryService.TEZ_TEST_RECOVERY_DRAIN_EVENTS_WHEN_STOPPED, false);
     tezConf.setBoolean(
         TezConfiguration.TEZ_AM_STAGING_SCRATCH_DATA_AUTO_DELETE, false);
+    tezConf.set(TezConfiguration.TEZ_AM_LOG_LEVEL, "INFO;org.apache.tez=DEBUG");
 
     hashJoinExample.setConf(tezConf);
     Path stagingDirPath = new Path("/tmp/tez-staging-dir");

@@ -18,10 +18,7 @@
 package org.apache.tez.dag.history.utils;
 
 import java.io.IOException;
-import java.io.InputStream;
-
 import org.apache.tez.common.ProtoConverters;
-import org.apache.tez.dag.history.RecoveryConverters;
 import org.apache.tez.dag.records.TezTaskAttemptID;
 import org.apache.tez.dag.recovery.records.RecoveryProtos;
 import org.apache.tez.dag.recovery.records.RecoveryProtos.TezEventProto;
